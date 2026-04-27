@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# Build output
+build/
+dist/
+
+# Artifacts / test run output
+artifacts/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets / config with credentials
+nettest.config.json
+
+# Large binary assets – distribute via GitHub Releases or external storage
+ovf/*.vmdk
+ovf/*.nvram
