@@ -1,0 +1,1153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>vCenter Network Test</title>
+  <link rel="stylesheet" href="/static/bootstrap.min.css">
+  <link rel="stylesheet" href="/static/bootstrap-icons.min.css">
+  <style>
+    body { background: #f0f2f5; margin: 0; }
+    .sidebar {
+      width: 210px; min-height: 100vh; background: #161b2e;
+      position: fixed; left: 0; top: 0; z-index: 100;
+    }
+    .sidebar .brand {
+      color: #fff; font-size: 1rem; font-weight: 700;
+      padding: 1.2rem 1.2rem 1.5rem; letter-spacing: .03em;
+      border-bottom: 1px solid rgba(255,255,255,.07);
+    }
+    .sidebar .nav-link {
+      color: #9ca3b4; padding: .6rem 1.2rem;
+      display: flex; align-items: center; gap: .55rem;
+      font-size: .9rem; border-left: 3px solid transparent;
+    }
+    .sidebar .nav-link:hover { color: #e2e8f0; background: rgba(255,255,255,.06); }
+    .sidebar .nav-link.active { color: #fff; background: rgba(99,179,237,.12); border-left-color: #63b3ed; }
+    .main { margin-left: 210px; padding: 2rem 2.5rem; min-height: 100vh; }
+    .section { display: none; }
+    .section.active { display: block; }
+
+    /* Log terminal */
+    .log-area {
+      background: #0d1117; color: #c9d1d9; font-family: 'Menlo','Consolas',monospace;
+      font-size: .78rem; height: 380px; overflow-y: auto;
+      padding: 1rem 1.2rem; border-radius: 0 0 .5rem .5rem;
+      white-space: pre-wrap; word-break: break-all; line-height: 1.55;
+    }
+    .log-area .log-ok   { color: #3fb950; }
+    .log-area .log-warn { color: #d29922; }
+    .log-area .log-err  { color: #f85149; }
+    .log-area .log-hdr  { color: #58a6ff; font-weight: 600; }
+
+    /* Matrix */
+    .matrix-wrap { overflow-x: auto; }
+    .matrix-table { font-size: .78rem; border-collapse: separate; border-spacing: 2px; }
+    .matrix-table th { font-size: .72rem; font-weight: 600; background: #f8fafc;
+                        padding: .35rem .5rem; white-space: nowrap; }
+    .matrix-table td { padding: .35rem .55rem; text-align: center;
+                        border-radius: 4px; white-space: nowrap; }
+    .c-pp { background: #dcfce7; color: #14532d; }        /* pass/pass */
+    .c-ff { background: #f1f5f9; color: #475569; }        /* fail/fail */
+    .c-pf { background: #fee2e2; color: #7f1d1d; }        /* pass expected, got fail */
+    .c-fp { background: #fef9c3; color: #713f12; }        /* fail expected, got pass */
+    .c-uk { background: #fef3c7; color: #78350f; }        /* unknown */
+    .c-self { background: #e2e8f0; color: #94a3b8; }
+
+    /* Input table inline editing */
+    .input-table td { padding: .25rem .4rem; }
+    .input-table input {
+      border: none; background: transparent; width: 100%;
+      font-size: .83rem; padding: 2px 4px; min-width: 70px;
+    }
+    .input-table input:focus {
+      outline: 2px solid #3b82f6; background: #eff6ff;
+      border-radius: 3px;
+    }
+
+    /* Run indicator */
+    .spin { animation: spin .9s linear infinite; display: inline-block; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* History */
+    .run-row { cursor: pointer; transition: background .12s; }
+    .run-row:hover { background: #f8fafc; }
+
+    /* Badges */
+    .vrf-badge {
+      display: inline-block; font-size: .65rem; font-weight: 700;
+      padding: 1px 5px; border-radius: 3px; margin-left: 4px;
+      background: #dbeafe; color: #1e40af; vertical-align: middle;
+    }
+    .section-title { font-size: 1.25rem; font-weight: 700; color: #1e293b; margin-bottom: 1.5rem; }
+  </style>
+</head>
+<body>
+
+<!-- ── Sidebar ──────────────────────────────────────────────────────────── -->
+<div class="sidebar">
+  <div class="brand"><i class="bi bi-diagram-3-fill me-2 text-info"></i>NetTest</div>
+  <nav class="nav flex-column mt-2">
+    <a href="#" class="nav-link active" data-section="config">
+      <i class="bi bi-gear-fill"></i> Config
+    </a>
+    <a href="#" class="nav-link" data-section="input">
+      <i class="bi bi-table"></i> Input Networks
+    </a>
+    <a href="#" class="nav-link" data-section="rules">
+      <i class="bi bi-shield-check"></i> VRF Rules
+    </a>
+    <a href="#" class="nav-link" data-section="run">
+      <i class="bi bi-play-circle-fill"></i> Run Test
+    </a>
+    <a href="#" class="nav-link" data-section="history">
+      <i class="bi bi-clock-history"></i> History
+    </a>
+  </nav>
+</div>
+
+<!-- ── Main ─────────────────────────────────────────────────────────────── -->
+<div class="main">
+
+  <!-- ══ Config ══════════════════════════════════════════════════════════ -->
+  <div id="section-config" class="section active">
+    <div class="section-title"><i class="bi bi-gear-fill me-2 text-secondary"></i>Configuration</div>
+    <div class="row g-3">
+      <div class="col-lg-5">
+        <div class="card shadow-sm">
+          <div class="card-header bg-white fw-semibold py-2">
+            <i class="bi bi-cloud-fill me-2 text-info"></i>vCenter Connection
+          </div>
+          <div class="card-body">
+            <div class="mb-3">
+              <label class="form-label fw-semibold small">Host / IP</label>
+              <input id="cfg-vcenter_host" type="text" class="form-control form-control-sm" placeholder="172.20.41.21">
+            </div>
+            <div class="mb-3">
+              <label class="form-label fw-semibold small">Username</label>
+              <input id="cfg-vcenter_user" type="text" class="form-control form-control-sm" placeholder="Administrator@vsphere.local">
+            </div>
+            <div class="mb-3">
+              <label class="form-label fw-semibold small">Password</label>
+              <div class="input-group input-group-sm">
+                <input id="cfg-vcenter_password" type="password" class="form-control" placeholder="••••••••">
+                <button class="btn btn-outline-secondary" type="button"
+                  onclick="togglePwd('cfg-vcenter_password',this)">
+                  <i class="bi bi-eye"></i>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="col-lg-7">
+        <div class="card shadow-sm">
+          <div class="card-header bg-white fw-semibold py-2">
+            <i class="bi bi-sliders me-2 text-secondary"></i>Test Settings
+          </div>
+          <div class="card-body">
+            <div class="row g-2">
+              <div class="col-sm-6">
+                <label class="form-label fw-semibold small">OVF Template Path</label>
+                <div class="input-group input-group-sm">
+                  <input id="cfg-ovf_path" type="text" class="form-control form-control-sm" placeholder="./ovf/Alpine-nettest.ovf">
+                  <label class="btn btn-outline-secondary mb-0 px-2" title="Browse OVF file">
+                    <i class="bi bi-folder2-open"></i>
+                    <input type="file" accept=".ovf,.vmx" style="display:none" onchange="uploadFile(this,'ovf')">
+                  </label>
+                </div>
+              </div>
+              <div class="col-sm-6">
+                <label class="form-label fw-semibold small">Input File</label>
+                <div class="input-group input-group-sm">
+                  <input id="cfg-input" type="text" class="form-control form-control-sm" placeholder="input.csv">
+                  <label class="btn btn-outline-secondary mb-0 px-2" title="Browse input file">
+                    <i class="bi bi-folder2-open"></i>
+                    <input type="file" accept=".csv,.txt,.xlsx" style="display:none" onchange="uploadFile(this,'input')">
+                  </label>
+                </div>
+              </div>
+              <div class="col-sm-6">
+                <label class="form-label fw-semibold small">Resource Pool</label>
+                <input id="cfg-resource_pool" type="text" class="form-control form-control-sm" placeholder="(default)">
+              </div>
+              <div class="col-sm-6">
+                <label class="form-label fw-semibold small">VM Prefix</label>
+                <input id="cfg-vm_prefix" type="text" class="form-control form-control-sm" placeholder="nettest">
+              </div>
+
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="mt-3 d-flex align-items-center gap-3">
+      <button class="btn btn-primary btn-sm px-4" onclick="saveConfig()">
+        <i class="bi bi-save me-1"></i>Save
+      </button>
+      <span id="cfg-msg" class="small text-muted"></span>
+    </div>
+  </div>
+
+  <!-- ══ Input Networks ══════════════════════════════════════════════════ -->
+  <div id="section-input" class="section">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+      <div class="section-title mb-0"><i class="bi bi-table me-2 text-secondary"></i>Input Networks</div>
+      <div class="d-flex gap-2 align-items-center">
+        <button class="btn btn-sm btn-outline-secondary" onclick="addRow()">
+          <i class="bi bi-plus-circle me-1"></i>Add Row
+        </button>
+        <button class="btn btn-sm btn-outline-info" onclick="loadVcenterInventory()" id="btn-sync-vc" title="Fetch datacenter / cluster / portgroup lists from vCenter">
+          <i class="bi bi-cloud-download me-1"></i>Sync from vCenter
+        </button>
+        <button class="btn btn-sm btn-primary" onclick="saveInput()">
+          <i class="bi bi-save me-1"></i>Save
+        </button>
+        <span id="input-msg" class="small text-muted"></span>
+      </div>
+    </div>
+    <div class="card shadow-sm">
+      <div class="card-body p-0">
+        <div class="table-responsive">
+          <table class="table table-sm table-hover mb-0 input-table" id="input-table">
+            <thead class="table-light">
+              <tr>
+                <th>Datacenter</th><th>Cluster</th><th>VLAN / Portgroup</th>
+                <th>Subnet</th><th>Gateway</th><th>VRF</th>
+                <th style="width:36px"></th>
+              </tr>
+            </thead>
+            <tbody id="input-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+    <p class="text-muted small mt-2">
+      <i class="bi bi-info-circle me-1"></i>
+      Rows where <strong>Cluster = MNGT</strong> are treated as ESXi management networks — no test VM will be deployed.
+    </p>
+  </div>
+
+  <!-- ══ VRF Rules ═══════════════════════════════════════════════════════ -->
+  <div id="section-rules" class="section">
+    <div class="section-title"><i class="bi bi-shield-check me-2 text-secondary"></i>VRF Rules</div>
+    <p class="text-muted small mb-3">
+      Define cross-VRF connectivity expectations. <strong>ALLOW</strong> means ICMP between those VRF pairs is expected to pass;
+      <strong>DENY</strong> means it is expected to be blocked. These rules override the default policy (same VRF = PASS, cross VRF = FAIL).
+    </p>
+    <div class="card shadow-sm mb-3">
+      <div class="card-header bg-white d-flex align-items-center gap-2 py-2">
+        <span class="fw-semibold small">Rules</span>
+        <button class="btn btn-outline-primary btn-sm py-0 px-2" onclick="addVrfRule()">
+          <i class="bi bi-plus-lg me-1"></i>Add Rule
+        </button>
+        <button class="btn btn-outline-secondary btn-sm py-0 px-2 ms-auto" onclick="clearVrfRules()">
+          <i class="bi bi-trash3 me-1"></i>Clear All
+        </button>
+      </div>
+      <div class="card-body">
+        <div class="mb-2">
+          <div class="row g-2 text-muted small fw-semibold mb-1 px-1">
+            <div class="col" style="max-width:160px">From VRF</div>
+            <div class="col" style="max-width:160px">To VRF</div>
+            <div class="col" style="max-width:110px">Action</div>
+            <div class="col">Comment (optional)</div>
+          </div>
+          <div id="vrf-rules-list"></div>
+          <p id="vrf-rules-empty" class="text-muted small fst-italic mt-2 mb-0">No rules defined — default policy applies (same VRF = PASS, cross VRF = FAIL).</p>
+        </div>
+      </div>
+    </div>
+    <div class="card shadow-sm">
+      <div class="card-header bg-white fw-semibold small py-2">Policy Preview</div>
+      <div class="card-body p-2">
+        <div id="vrf-rules-preview" class="text-muted small fst-italic">Add rules above to see the policy summary.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ Run Test ════════════════════════════════════════════════════════ -->
+  <div id="section-run" class="section">
+    <div class="section-title"><i class="bi bi-play-circle-fill me-2 text-secondary"></i>Run Test</div>
+
+    <!-- Options bar -->
+    <div class="card shadow-sm mb-3">
+      <div class="card-body py-2">
+        <div class="row g-2 align-items-end">
+          <div class="col-auto">
+            <label class="form-label small fw-semibold mb-1">Probe Mode</label>
+            <select id="run-probe_mode" class="form-select form-select-sm">
+              <option value="dry-run">dry-run</option>
+              <option value="in-guest-ping" selected>in-guest-ping</option>
+              <option value="controller-gateway">controller-gateway</option>
+            </select>
+          </div>
+          <div class="col-auto">
+            <label class="form-label small fw-semibold mb-1">Max Retries</label>
+            <input id="run-max_retries" type="number" min="0" max="5" value="0"
+              class="form-control form-control-sm" style="width:72px">
+          </div>
+          <div class="col-auto">
+            <label class="form-label small fw-semibold mb-1">VMs/Subnet</label>
+            <input id="run-vms_per_subnet" type="number" min="1" max="8" value="1"
+              class="form-control form-control-sm" style="width:72px"
+              title="Number of VMs per subnet. Use ≥2 to enable intra-subnet phase">
+          </div>
+          <div class="col-auto">
+            <label class="form-label small fw-semibold mb-1">Max VMs/Phase</label>
+            <input id="run-max_vms_per_phase" type="number" min="2" max="100" value="20"
+              class="form-control form-control-sm" style="width:80px">
+          </div>
+          <div class="col-lg">
+            <label class="form-label small fw-semibold mb-1">Phases</label>
+            <div class="d-flex flex-wrap gap-2">
+              <div class="form-check form-check-inline mb-0">
+                <input class="form-check-input phase-chk" type="checkbox" id="ph-intra-subnet" value="intra-subnet">
+                <label class="form-check-label small" for="ph-intra-subnet">Intra-Subnet</label>
+              </div>
+              <div class="form-check form-check-inline mb-0">
+                <input class="form-check-input phase-chk" type="checkbox" id="ph-intra-vrf" value="intra-vrf" checked>
+                <label class="form-check-label small" for="ph-intra-vrf">Intra-VRF</label>
+              </div>
+              <div class="form-check form-check-inline mb-0">
+                <input class="form-check-input phase-chk" type="checkbox" id="ph-cross-vrf-allowlist" value="cross-vrf-allowlist" checked>
+                <label class="form-check-label small" for="ph-cross-vrf-allowlist">Cross-VRF Allow</label>
+              </div>
+              <div class="form-check form-check-inline mb-0">
+                <input class="form-check-input phase-chk" type="checkbox" id="ph-cross-vrf-block" value="cross-vrf-block" checked>
+                <label class="form-check-label small" for="ph-cross-vrf-block">Cross-VRF Block</label>
+              </div>
+            </div>
+          </div>
+          <div class="col-auto d-flex flex-column gap-1">
+            <div class="form-check form-switch mb-0">
+              <input id="run-execute_vcenter" class="form-check-input" type="checkbox">
+              <label class="form-check-label small" for="run-execute_vcenter">Execute vCenter</label>
+            </div>
+            <div class="form-check form-switch mb-0">
+              <input id="run-phased_testing" class="form-check-input" type="checkbox">
+              <label class="form-check-label small" for="run-phased_testing">Phased Testing</label>
+            </div>
+            <div class="form-check form-switch mb-0">
+              <input id="run-cleanup_on_failure" class="form-check-input" type="checkbox">
+              <label class="form-check-label small" for="run-cleanup_on_failure">Cleanup on Failure</label>
+            </div>
+          </div>
+          <div class="col-auto pb-1">
+            <button id="btn-run" class="btn btn-success btn-sm px-4" onclick="startRun()">
+              <i class="bi bi-play-fill me-1"></i>Start Run
+            </button>
+          </div>
+          <div class="col-auto pb-1" id="run-indicator"></div>
+        </div>
+
+        <div class="border-top pt-2 mt-1">
+          <span class="text-muted small"><i class="bi bi-shield-check me-1"></i>VRF rules are configured in the <a href="#" onclick="navTo('rules');return false;">VRF Rules</a> tab.</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Log output -->
+    <div class="card shadow-sm mb-3">
+      <div class="card-header bg-dark d-flex justify-content-between align-items-center py-1">
+        <span class="text-light small fw-semibold"><i class="bi bi-terminal me-2"></i>Output</span>
+        <button class="btn btn-sm btn-dark py-0 px-2" onclick="document.getElementById('log-area').innerHTML=''">
+          <i class="bi bi-trash3 text-secondary"></i>
+        </button>
+      </div>
+      <div id="log-area" class="log-area"></div>
+    </div>
+
+    <!-- Results (shown after run) -->
+    <div id="run-results" style="display:none">
+      <div class="card shadow-sm">
+        <div class="card-header bg-white fw-semibold py-2">
+          <i class="bi bi-clipboard-data me-2 text-secondary"></i>Results
+        </div>
+        <div class="card-body" id="run-results-body"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ History ═════════════════════════════════════════════════════════ -->
+  <div id="section-history" class="section">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+      <div class="section-title mb-0"><i class="bi bi-clock-history me-2 text-secondary"></i>History</div>
+      <button class="btn btn-sm btn-outline-secondary" onclick="loadHistory()">
+        <i class="bi bi-arrow-clockwise me-1"></i>Refresh
+      </button>
+    </div>
+    <div class="card shadow-sm">
+      <div class="card-body p-0">
+        <table class="table table-hover mb-0 small">
+          <thead class="table-light">
+            <tr>
+              <th>Run ID</th><th>Status</th><th>Probe Mode</th>
+              <th>Passed</th><th>Failed</th><th>Total</th><th></th>
+            </tr>
+          </thead>
+          <tbody id="history-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+</div><!-- /main -->
+
+<script src="/static/bootstrap.bundle.min.js"></script>
+<script>
+// ── Navigation ────────────────────────────────────────────────────────────────
+document.querySelectorAll('.nav-link[data-section]').forEach(link => {
+  link.addEventListener('click', e => {
+    e.preventDefault();
+    navTo(link.dataset.section);
+  });
+});
+
+// ── API ───────────────────────────────────────────────────────────────────────
+async function apiGet(url) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+async function apiPut(url, data) {
+  const r = await fetch(url, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+async function apiPost(url, data) {
+  const r = await fetch(url, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+// ── Config ────────────────────────────────────────────────────────────────────
+const CFG_FIELDS = ['vcenter_host','vcenter_user','vcenter_password',
+                    'ovf_path','input','resource_pool','vm_prefix'];
+
+async function loadConfig() {
+  try {
+    const cfg = await apiGet('/api/config');
+    CFG_FIELDS.forEach(k => {
+      const el = document.getElementById('cfg-' + k);
+      if (el && cfg[k] !== undefined) el.value = cfg[k];
+    });
+  } catch(e) { console.error('loadConfig:', e); }
+}
+
+async function saveConfig() {
+  try {
+    const cfg = await apiGet('/api/config') || {};
+    CFG_FIELDS.forEach(k => {
+      const el = document.getElementById('cfg-' + k);
+      if (el) cfg[k] = el.value;
+    });
+    await apiPut('/api/config', { data: cfg });
+    flash('cfg-msg', '✓ Saved');
+  } catch(e) { alert('Save failed: ' + e); }
+}
+
+async function uploadFile(input, type) {
+  if (!input.files.length) return;
+  const file = input.files[0];
+  const fd = new FormData();
+  fd.append('file', file);
+  try {
+    const r = await fetch(`/api/upload/${type}`, { method: 'POST', body: fd });
+    if (!r.ok) throw new Error(await r.text());
+    const { path } = await r.json();
+    document.getElementById(type === 'ovf' ? 'cfg-ovf_path' : 'cfg-input').value = path;
+    flash('cfg-msg', `✓ Uploaded ${file.name}`);
+  } catch(e) {
+    alert('Upload failed: ' + e);
+  }
+  input.value = '';
+}
+
+function togglePwd(id, btn) {
+  const el = document.getElementById(id);
+  el.type = el.type === 'password' ? 'text' : 'password';
+  btn.innerHTML = el.type === 'password' ? '<i class="bi bi-eye"></i>' : '<i class="bi bi-eye-slash"></i>';
+}
+
+// ── Input ─────────────────────────────────────────────────────────────────────
+const COLS = ['datacenter','cluster','vlan','subnet','gw','vrf'];
+
+// ── vCenter Inventory cache ───────────────────────────────────────────────────
+let _vcInventory = null;  // { datacenters, clusters:{dc:[cl,...]}, portgroups:{dc:{pg:vlan}} }
+
+async function loadVcenterInventory() {
+  const btn = document.getElementById('btn-sync-vc');
+  if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spin bi bi-arrow-repeat me-1"></span>Syncing…'; }
+  try {
+    _vcInventory = await apiGet('/api/vcenter/inventory');
+    // Rebuild all dropdowns in existing rows
+    document.querySelectorAll('#input-tbody tr').forEach(tr => _rebuildRowSelects(tr));
+    refreshVrfSelects();
+    flash('input-msg', `✓ Loaded ${(_vcInventory.datacenters||[]).length} DC(s) from vCenter`);
+  } catch(e) {
+    flash('input-msg', '✗ ' + (e.message || e), 5000);
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="bi bi-cloud-download me-1"></i>Sync from vCenter'; }
+  }
+}
+
+function _dcOptions(selected) {
+  const dcs = _vcInventory?.datacenters || [];
+  let html = `<option value="">— DC —</option>`;
+  dcs.forEach(d => { html += `<option${d===selected?' selected':''}>${esc(d)}</option>`; });
+  return html;
+}
+
+function _clusterOptions(dc, selected) {
+  const cls = (_vcInventory?.clusters || {})[dc] || [];
+  let html = `<option value="">— Cluster —</option>
+    <option value="MNGT"${selected==='MNGT'?' selected':''}>MNGT (ESXi mgmt)</option>`;
+  cls.forEach(c => { if (c !== 'MNGT') html += `<option${c===selected?' selected':''}>${esc(c)}</option>`; });
+  return html;
+}
+
+function _pgOptions(dc, cluster, selectedVlan) {
+  // portgroups is {dc: {cluster: [{name, vlan}]}}
+  const pgs = ((_vcInventory?.portgroups || {})[dc] || {})[cluster] || [];
+  let html = `<option value="">— Portgroup —</option>`;
+  pgs.forEach(({name, vlan}) => {
+    const hasVlan = vlan && vlan !== '0';
+    const label = hasVlan ? `${name}  [VLAN ${vlan}]` : name;
+    const val   = hasVlan ? vlan : name;  // numeric VLAN when set; pg name for VLAN-0 or blank
+    const sel   = (val === selectedVlan || name === selectedVlan) ? ' selected' : '';
+    html += `<option value="${esc(val)}"${sel}>${esc(label)}</option>`;
+  });
+  return html;
+}
+
+function _rebuildRowSelects(tr, row) {
+  const r = row || {};
+  // datacenter
+  const dcCell = tr.querySelector('td [data-col="datacenter"]')?.closest('td');
+  if (dcCell) {
+    const cur = tr.querySelector('[data-col="datacenter"]')?.value || r.datacenter || '';
+    dcCell.innerHTML = `<select class="form-select form-select-sm" data-col="datacenter"
+      style="min-width:110px" onchange="_onDcChange(this)">${_dcOptions(cur)}</select>`;
+  }
+  const dcVal = tr.querySelector('[data-col="datacenter"]')?.value || '';
+  // cluster
+  const clCell = tr.querySelector('td [data-col="cluster"]')?.closest('td');
+  if (clCell) {
+    const cur = tr.querySelector('[data-col="cluster"]')?.value || r.cluster || '';
+    clCell.innerHTML = `<select class="form-select form-select-sm" data-col="cluster"
+      style="min-width:120px" onchange="_onClusterChange(this)">${_clusterOptions(dcVal, cur)}</select>`;
+  }
+  const clVal = tr.querySelector('[data-col="cluster"]')?.value || '';
+  // vlan / portgroup — filtered by dc + cluster
+  const vlanCell = tr.querySelector('td [data-col="vlan"]')?.closest('td');
+  if (vlanCell) {
+    const cur = tr.querySelector('[data-col="vlan"]')?.value || r.vlan || '';
+    vlanCell.innerHTML = `<select class="form-select form-select-sm" data-col="vlan"
+      style="min-width:180px" onchange="_onPgChange(this)">${_pgOptions(dcVal, clVal, cur)}</select>`;
+  }
+}
+
+function _onDcChange(sel) {
+  const tr = sel.closest('tr');
+  const dc = sel.value;
+  const clSel = tr.querySelector('[data-col="cluster"]');
+  if (clSel && clSel.tagName === 'SELECT') clSel.innerHTML = _clusterOptions(dc, '');
+  const pgSel = tr.querySelector('[data-col="vlan"]');
+  if (pgSel && pgSel.tagName === 'SELECT') pgSel.innerHTML = _pgOptions(dc, '', '');
+}
+
+function _onClusterChange(sel) {
+  const tr = sel.closest('tr');
+  const isMngt = sel.value === 'MNGT';
+  tr.classList.toggle('table-secondary', isMngt);
+  // Rebuild portgroup dropdown filtered to this cluster
+  const dc = tr.querySelector('[data-col="datacenter"]')?.value || '';
+  const pgSel = tr.querySelector('[data-col="vlan"]');
+  if (pgSel && pgSel.tagName === 'SELECT') pgSel.innerHTML = _pgOptions(dc, sel.value, '');
+}
+
+function _onPgChange(sel) {
+  // value is already the VLAN number (or pg name fallback); data-col="vlan" — nothing else to do.
+}
+
+async function loadInput() {
+  try {
+    const { rows } = await apiGet('/api/input');
+    const tbody = document.getElementById('input-tbody');
+    tbody.innerHTML = '';
+    rows.forEach(appendInputRow);
+    refreshVrfSelects();
+  } catch(e) { console.error('loadInput:', e); }
+}
+
+function appendInputRow(row = {}) {
+  const tbody = document.getElementById('input-tbody');
+  const tr = document.createElement('tr');
+  const isMngt = (row.cluster || '').toUpperCase() === 'MNGT';
+  if (isMngt) tr.classList.add('table-secondary');
+
+  // Free-text columns
+  const freeCols = ['subnet', 'gw', 'vrf'];
+  const dropdownCols = ['vlan', 'cluster', 'datacenter'];
+
+  // Build cells in COLS order
+  COLS.forEach(k => {
+    const td = document.createElement('td');
+    if (freeCols.includes(k)) {
+      td.innerHTML = `<input type="text" value="${esc(row[k]||'')}" data-col="${k}" placeholder="${k}">`;
+    } else {
+      // Placeholder input — will be replaced by _rebuildRowSelects if inventory loaded,
+      // or remain as text input if not yet synced
+      td.innerHTML = `<input type="text" value="${esc(row[k]||'')}" data-col="${k}" placeholder="${k}">`;
+    }
+    tr.appendChild(td);
+  });
+
+  const delTd = document.createElement('td');
+  delTd.innerHTML = `<button class="btn btn-sm btn-link text-danger p-0 lh-1" onclick="this.closest('tr').remove()" title="Delete">
+    <i class="bi bi-x-circle"></i>
+  </button>`;
+  tr.appendChild(delTd);
+  tbody.appendChild(tr);
+
+  // If inventory already loaded, upgrade to selects immediately
+  if (_vcInventory) _rebuildRowSelects(tr, row);
+}
+
+function addRow() { appendInputRow(); }
+
+async function saveInput() {
+  const rows = [];
+  document.querySelectorAll('#input-tbody tr').forEach(tr => {
+    const row = {};
+    tr.querySelectorAll('[data-col]').forEach(el => {
+      row[el.dataset.col] = el.value.trim();
+    });
+    if (Object.values(row).some(v => v)) rows.push(row);
+  });
+  try {
+    await apiPut('/api/input', { rows });
+    flash('input-msg', '✓ Saved');
+  } catch(e) { alert('Save failed: ' + e); }
+}
+
+// ── Run ───────────────────────────────────────────────────────────────────────
+let _sse = null;
+
+async function startRun() {
+  document.getElementById('btn-run').disabled = true;
+  document.getElementById('run-results').style.display = 'none';
+  document.getElementById('log-area').innerHTML = '';
+  setIndicator('running');
+
+  const selectedPhases = [...document.querySelectorAll('.phase-chk:checked')].map(c => c.value);
+  const req = {
+    execute_vcenter:    document.getElementById('run-execute_vcenter').checked,
+    probe_mode:         document.getElementById('run-probe_mode').value,
+    max_retries:        parseInt(document.getElementById('run-max_retries').value) || 0,
+    cleanup_on_failure: document.getElementById('run-cleanup_on_failure').checked,
+    phased_testing:     document.getElementById('run-phased_testing').checked,
+    vms_per_subnet:     parseInt(document.getElementById('run-vms_per_subnet').value) || 1,
+    max_vms_per_phase:  parseInt(document.getElementById('run-max_vms_per_phase').value) || 20,
+    phases:             selectedPhases.join(','),
+    vrf_links:          getVrfLinks(),
+  };
+  try {
+    const { run_id } = await apiPost('/api/run', req);
+    appendLog(`▶ Run started: ${run_id}\n`, 'hdr');
+    streamRun(run_id);
+  } catch(e) {
+    appendLog('Error: ' + e + '\n', 'err');
+    document.getElementById('btn-run').disabled = false;
+    setIndicator('idle');
+  }
+}
+
+// ── Navigation helper ─────────────────────────────────────────────────────────
+function navTo(sec) {
+  document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
+  document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+  const link = document.querySelector(`.nav-link[data-section="${sec}"]`);
+  if (link) link.classList.add('active');
+  const el = document.getElementById('section-' + sec);
+  if (el) el.classList.add('active');
+  if (sec === 'input')   loadInput();
+  if (sec === 'rules')   loadInput().then(refreshVrfSelects).catch(() => refreshVrfSelects());
+  if (sec === 'history') loadHistory();
+}
+
+// ── VRF Rules ─────────────────────────────────────────────────────────────────
+let _vrfRuleId = 0;
+
+function _vrfUpdateUI() {
+  const rows = document.querySelectorAll('#vrf-rules-list .vrf-rule-row');
+  const empty = document.getElementById('vrf-rules-empty');
+  if (empty) empty.style.display = rows.length ? 'none' : '';
+  _vrfUpdatePreview();
+}
+
+function _vrfUpdatePreview() {
+  const links = getVrfLinks();
+  const el = document.getElementById('vrf-rules-preview');
+  if (!el) return;
+  if (!links.length) {
+    el.innerHTML = '<span class="fst-italic">Add rules above to see the policy summary.</span>';
+    return;
+  }
+  el.innerHTML = links.map(l => {
+    const parts = l.split(':');
+    const from = parts[0], to = parts[1], fail = parts[2] === 'FAIL';
+    const badge = fail
+      ? `<span class="badge bg-danger">DENY</span>`
+      : `<span class="badge bg-success">ALLOW</span>`;
+    return `<div class="mb-1">${badge} <code>${from}</code> ↔ <code>${to}</code></div>`;
+  }).join('');
+}
+
+function getVrfOptions() {
+  const vrfs = new Set();
+  document.querySelectorAll('#input-tbody tr').forEach(tr => {
+    const v = tr.querySelector('input[data-col="vrf"]')?.value.trim();
+    if (v) vrfs.add(v);
+  });
+  return [...vrfs].sort();
+}
+
+function _buildVrfSelect(cls, selected) {
+  const opts = getVrfOptions();
+  const sel = document.createElement('select');
+  sel.className = `form-select form-select-sm ${cls}`;
+  sel.onchange = _vrfUpdatePreview;
+  const blank = document.createElement('option');
+  blank.value = ''; blank.textContent = '— select VRF —';
+  if (!selected) blank.selected = true;
+  sel.appendChild(blank);
+  opts.forEach(v => {
+    const o = document.createElement('option');
+    o.value = v; o.textContent = v;
+    if (v === selected) o.selected = true;
+    sel.appendChild(o);
+  });
+  return sel;
+}
+
+function refreshVrfSelects() {
+  document.querySelectorAll('#vrf-rules-list .vrf-rule-row').forEach(row => {
+    ['vrf-from', 'vrf-to'].forEach(cls => {
+      const existing = row.querySelector('.' + cls);
+      if (!existing) return;
+      const cur = existing.value;
+      const fresh = _buildVrfSelect(cls, cur);
+      existing.replaceWith(fresh);
+    });
+  });
+}
+
+function addVrfRule(from_vrf, to_vrf, action, comment) {
+  const id = ++_vrfRuleId;
+  const row = document.createElement('div');
+  row.className = 'row g-2 align-items-center mb-2 vrf-rule-row';
+  row.id = 'vrf-rule-' + id;
+
+  const fromSel = _buildVrfSelect('vrf-from', from_vrf || '');
+  const toSel   = _buildVrfSelect('vrf-to',   to_vrf   || '');
+
+  const actionSel = document.createElement('select');
+  actionSel.className = 'form-select form-select-sm vrf-action';
+  actionSel.onchange = _vrfUpdatePreview;
+  actionSel.innerHTML = `
+    <option value="PASS"${(action||'PASS')==='PASS'?' selected':''}>ALLOW</option>
+    <option value="FAIL"${action==='FAIL'?' selected':''}>DENY</option>`;
+
+  row.innerHTML = `
+    <div class="col vrf-from-col" style="max-width:160px"></div>
+    <div class="col vrf-to-col"   style="max-width:160px"></div>
+    <div class="col vrf-action-col" style="max-width:110px"></div>
+    <div class="col">
+      <input type="text" class="form-control form-control-sm vrf-comment" placeholder="Optional comment"
+        value="${comment||''}">
+    </div>
+    <div class="col-auto">
+      <button class="btn btn-sm btn-outline-danger py-0 px-2" onclick="removeVrfRule(${id})"
+        title="Remove"><i class="bi bi-trash3"></i></button>
+    </div>`;
+
+  row.querySelector('.vrf-from-col').appendChild(fromSel);
+  row.querySelector('.vrf-to-col').appendChild(toSel);
+  row.querySelector('.vrf-action-col').appendChild(actionSel);
+
+  document.getElementById('vrf-rules-list').appendChild(row);
+  _vrfUpdateUI();
+}
+
+function removeVrfRule(id) {
+  document.getElementById('vrf-rule-' + id)?.remove();
+  _vrfUpdateUI();
+}
+
+function clearVrfRules() {
+  document.getElementById('vrf-rules-list').innerHTML = '';
+  _vrfUpdateUI();
+}
+
+function getVrfLinks() {
+  const rules = [];
+  document.querySelectorAll('#vrf-rules-list .vrf-rule-row').forEach(row => {
+    const from = row.querySelector('.vrf-from')?.value.trim();
+    const to   = row.querySelector('.vrf-to')?.value.trim();
+    const act  = row.querySelector('.vrf-action')?.value || 'PASS';
+    if (from && to) {
+      rules.push(act === 'FAIL' ? `${from}:${to}:FAIL` : `${from}:${to}`);
+    }
+  });
+  return rules;
+}
+
+function streamRun(runId) {
+  if (_sse) _sse.close();
+  _sse = new EventSource(`/api/run/${runId}/stream`);
+  _sse.onmessage = async e => {
+    const raw = e.data;
+    if (raw.startsWith('__DONE__:')) {
+      _sse.close();
+      const rc = parseInt(raw.split(':')[1]);
+      document.getElementById('btn-run').disabled = false;
+      appendLog(`\n▶ Finished (exit ${rc})\n`, rc === 0 ? 'ok' : 'err');
+      setIndicator(rc === 0 ? 'pass' : 'fail');
+      try {
+        const result = await apiGet(`/api/run/${runId}/result`);
+        showResults(result);
+      } catch(e2) { appendLog('Could not load results: ' + e2 + '\n', 'warn'); }
+      return;
+    }
+    let line;
+    try { line = JSON.parse(raw); } catch { line = raw; }
+    const cls = line.includes('PASS') ? 'ok'
+               : line.includes('fail') || line.includes('Error') || line.includes('failed') ? 'err'
+               : line.includes('Warning') || line.includes('warn') ? 'warn' : '';
+    appendLog(line + '\n', cls);
+  };
+  _sse.onerror = () => {
+    document.getElementById('btn-run').disabled = false;
+    setIndicator('idle');
+    appendLog('Connection lost.\n', 'warn');
+  };
+}
+
+function appendLog(text, cls = '') {
+  const el = document.getElementById('log-area');
+  if (cls) {
+    const span = document.createElement('span');
+    span.className = 'log-' + cls;
+    span.textContent = text;
+    el.appendChild(span);
+  } else {
+    el.appendChild(document.createTextNode(text));
+  }
+  el.scrollTop = el.scrollHeight;
+}
+
+function setIndicator(state) {
+  const el = document.getElementById('run-indicator');
+  const map = {
+    idle:    '',
+    running: '<i class="bi bi-arrow-repeat spin text-primary fs-5"></i> <span class="text-primary small">Running…</span>',
+    pass:    '<i class="bi bi-check-circle-fill text-success fs-5"></i> <span class="text-success fw-bold">PASS</span>',
+    fail:    '<i class="bi bi-x-circle-fill text-danger fs-5"></i> <span class="text-danger fw-bold">FAIL</span>',
+  };
+  el.innerHTML = map[state] || '';
+}
+
+// ── Result Matrix ─────────────────────────────────────────────────────────────
+function showResults(result) {
+  const el = document.getElementById('run-results');
+  document.getElementById('run-results-body').innerHTML = buildResultHTML(result);
+  el.style.display = 'block';
+}
+
+function buildResultHTML(result) {
+  // Results is a list of {src_subnet, dst_subnet, expected, actual, status, reason, phase, ...}
+  const details  = Array.isArray(result?.Results) ? result.Results
+                 : (result?.Results?.details || []);
+  const total    = details.length;
+  const passed   = details.filter(d => d.status === 'pass').length;
+  const failed   = total - passed;
+  const status   = result?.FinalStatus || 'unknown';
+  const isPhased = result?.Plan?.phased_testing;
+
+  // Build subnet → VRF map from ParsedInput
+  const subnetVrf = {};
+  const subnetVlan = {};
+  const allRows = [
+    ...(result?.ParsedInput?.vm_provisioned || []),
+    ...(result?.ParsedInput?.mngt_esxi_skipped || []),
+  ];
+  allRows.forEach(r => {
+    if (r.subnet) { subnetVrf[r.subnet] = r.vrf || ''; subnetVlan[r.subnet] = r.vlan || ''; }
+  });
+
+  // Summary banner
+  let html = `<div class="d-flex flex-wrap gap-2 align-items-center mb-3">
+    <span class="badge fs-6 ${status === 'PASS' ? 'bg-success' : 'bg-danger'}">${status}</span>
+    <span class="badge bg-success">✓ ${passed} passed</span>
+    ${failed ? `<span class="badge bg-danger">✗ ${failed} failed</span>` : ''}
+    <span class="text-muted small">${total} test cases</span>
+    <span class="text-muted small ms-1">• ${result?.Plan?.probe_mode || ''}</span>
+    ${isPhased ? `<span class="badge bg-info text-dark">Phased</span>` : ''}
+  </div>`;
+
+  if (!details.length) return html + '<p class="text-muted">No test cases.</p>';
+
+  // ── Phase summary cards ──────────────────────────────────────────────────
+  const phases = result?.Phases || [];
+  const _phaseNames = {
+    'intra-subnet':        'Intra-Subnet',
+    'intra-vrf':           'Intra-VRF',
+    'cross-vrf-allowlist': 'Cross-VRF Allow',
+    'cross-vrf-block':     'Cross-VRF Block',
+  };
+  const _phaseColors = {
+    'intra-subnet':        'primary',
+    'intra-vrf':           'success',
+    'cross-vrf-allowlist': 'warning',
+    'cross-vrf-block':     'secondary',
+  };
+  if (phases.length) {
+    html += `<div class="d-flex flex-wrap gap-2 mb-3">`;
+    phases.forEach(p => {
+      const color = _phaseColors[p.phase_id] || 'secondary';
+      const ok = p.failed === 0;
+      html += `<div class="card border-${color} shadow-sm" style="min-width:140px;max-width:180px">
+        <div class="card-header bg-${color} text-white py-1 px-2 small fw-semibold">
+          ${_phaseNames[p.phase_id] || p.phase_id}${p.batch_index > 0 ? ' #' + (p.batch_index + 1) : ''}
+        </div>
+        <div class="card-body py-1 px-2 small">
+          <div>${p.cases} cases</div>
+          <div class="text-success">✓ ${p.passed}</div>
+          ${p.failed ? `<div class="text-danger">✗ ${p.failed}</div>` : ''}
+        </div>
+      </div>`;
+    });
+    html += `</div>`;
+  }
+
+  // ── Result matrix ──────────────────────────────────────────────────────────
+  // Group by phase for phase-aware matrix
+  const detailsByPhase = {};
+  details.forEach(d => {
+    const ph = d.phase || 'intra-vrf';
+    if (!detailsByPhase[ph]) detailsByPhase[ph] = [];
+    detailsByPhase[ph].push(d);
+  });
+
+  const phaseOrder = ['intra-subnet', 'intra-vrf', 'cross-vrf-allowlist', 'cross-vrf-block'];
+  phaseOrder.forEach(ph => {
+    const phDetails = detailsByPhase[ph] || [];
+    if (!phDetails.length) return;
+
+    const srcSubnets = [...new Set(phDetails.map(d => d.src_subnet))];
+    const dstSubnets = [...new Set(phDetails.map(d => d.dst_subnet))];
+    const cell = {};
+    phDetails.forEach(d => {
+      // Key includes vm indices for intra-subnet scenarios
+      const key = `${d.src_subnet}|${d.dst_subnet}|${d.src_vm_index||0}|${d.dst_vm_index||0}`;
+      cell[key] = d;
+    });
+
+    html += `<div class="mb-3">
+      <div class="fw-semibold small mb-1">
+        <span class="badge bg-${_phaseColors[ph] || 'secondary'} me-1">${_phaseNames[ph] || ph}</span>
+        <span class="text-muted">${phDetails.length} cases</span>
+      </div>
+      <div class="matrix-wrap"><table class="matrix-table">
+        <thead><tr>
+          <th style="text-align:left">src \\ dst</th>
+          ${dstSubnets.map(d => `<th style="text-align:center">${hdr(d, subnetVlan, subnetVrf)}</th>`).join('')}
+        </tr></thead><tbody>`;
+
+    srcSubnets.forEach(src => {
+      html += `<tr><td style="font-weight:600;white-space:nowrap">${hdr(src, subnetVlan, subnetVrf)}</td>`;
+      dstSubnets.forEach(dst => {
+        // For intra-subnet, there can be multiple cells per (src,dst) pair
+        const phCells = phDetails.filter(d => d.src_subnet === src && d.dst_subnet === dst);
+        if (!phCells.length) {
+          html += src === dst ? `<td class="c-self">—</td>` : `<td></td>`;
+          return;
+        }
+        if (phCells.length === 1) {
+          html += matrixCell(phCells[0]);
+        } else {
+          // Multiple VM pair cells — show compact stacked
+          html += `<td style="padding:2px">${phCells.map(c => matrixCell(c, true)).join('')}</td>`;
+        }
+      });
+      html += '</tr>';
+    });
+
+    html += `</tbody></table></div></div>`;
+  });
+
+  // Legend
+  html += `<div class="d-flex flex-wrap gap-3 mt-1 mb-3 small text-muted">
+    <span><span style="padding:2px 6px;border-radius:3px" class="c-pp">✓</span> Reachable (expected)</span>
+    <span><span style="padding:2px 6px;border-radius:3px" class="c-ff">🔒</span> Blocked (expected)</span>
+    <span><span style="padding:2px 6px;border-radius:3px" class="c-pf">✗</span> Should reach, blocked</span>
+    <span><span style="padding:2px 6px;border-radius:3px" class="c-fp">⚠</span> Should block, reachable!</span>
+    <span><span style="padding:2px 6px;border-radius:3px" class="c-uk">?</span> Unknown</span>
+  </div>`;
+
+  // Detail table (collapsible)
+  html += `<details class="mt-2"><summary class="text-muted small" style="cursor:pointer">
+    Show all test cases (${details.length})
+  </summary>
+  <div class="table-responsive mt-2">
+  <table class="table table-sm table-hover small">
+    <thead class="table-light"><tr>
+      <th>Phase</th><th>Src Subnet</th><th>Dst Subnet</th>
+      <th>Expected</th><th>Actual</th><th>Status</th><th>Reason</th>
+    </tr></thead><tbody>`;
+  details.forEach(d => {
+    const badge = d.status === 'pass' ? 'bg-success' : 'bg-danger';
+    const phColor = _phaseColors[d.phase] || 'secondary';
+    html += `<tr>
+      <td><span class="badge bg-${phColor} text-white" style="font-size:.65rem">${_phaseNames[d.phase||'intra-vrf']||d.phase||''}</span></td>
+      <td>${d.src_subnet}${d.src_vm_index > 0 ? `<sup class="text-muted">[${d.src_vm_index}]</sup>` : ''}</td>
+      <td>${d.dst_subnet}${d.dst_vm_index > 0 ? `<sup class="text-muted">[${d.dst_vm_index}]</sup>` : ''}</td>
+      <td>${d.expected}</td><td>${d.actual}</td>
+      <td><span class="badge ${badge}">${d.status}</span></td>
+      <td class="text-muted">${d.reason}</td>
+    </tr>`;
+  });
+  html += `</tbody></table></div></details>`;
+
+  // Retained VMs warning
+  const retained = result?.Cleanup?.vm_cleanup?.retained_vms;
+  if (retained && retained.length) {
+    html += `<div class="alert alert-warning mt-3 small">
+      <strong><i class="bi bi-exclamation-triangle me-1"></i>Retained VMs (run failed — kept for troubleshooting):</strong>
+      <ul class="mb-0 mt-1">`;
+    retained.forEach(v => {
+      html += `<li><code>${v.vm_name}</code> — ${v.ip_address} (${v.moid})</li>`;
+    });
+    html += `</ul></div>`;
+  }
+
+  return html;
+}
+
+function matrixCell(c, compact = false) {
+  const {expected, actual, status: st, reason} = c;
+  let cls, icon, tip;
+  if (actual === 'UNKNOWN')                       { cls='c-uk'; icon='?';    tip='Unknown'; }
+  else if (expected==='PASS' && actual==='PASS')  { cls='c-pp'; icon='✓';    tip='Reachable (expected)'; }
+  else if (expected==='FAIL' && actual==='FAIL')  { cls='c-ff'; icon='🔒';  tip='Blocked (expected)'; }
+  else if (expected==='PASS' && actual==='FAIL')  { cls='c-pf'; icon='✗';    tip='Should reach but blocked'; }
+  else                                            { cls='c-fp'; icon='⚠';   tip='Should block but reachable!'; }
+  const vmTag = (c.src_vm_index || c.dst_vm_index) ? ` [${c.src_vm_index}→${c.dst_vm_index}]` : '';
+  if (compact) {
+    return `<span class="${cls}" style="display:inline-block;border-radius:3px;padding:0 3px;font-size:.78em" title="${tip}${vmTag}\nreason:${reason}">${icon}</span>`;
+  }
+  return `<td class="${cls}" title="${tip}${vmTag}\nreason: ${reason}\nexpected: ${expected} actual: ${actual}">
+    <span style="font-size:.9em">${icon}</span>
+    <br><span style="font-size:.65em">${actual}</span>
+  </td>`;
+}
+
+function hdr(subnet, subnetVlan, subnetVrf) {
+  const vlan = subnetVlan[subnet] ? `<br><span class="text-muted" style="font-size:.65rem">VLAN ${subnetVlan[subnet]}</span>` : '';
+  const vrf  = subnetVrf[subnet]  ? `<br><span class="vrf-badge">${subnetVrf[subnet]}</span>` : '';
+  return `${shorten(subnet)}${vlan}${vrf}`;
+}
+
+async function deleteVMs(runId, btn) {
+  if (!confirm(`Delete all test VMs for run ${runId}?`)) return;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+  try {
+    const r = await fetch(`/api/run/${runId}/cleanup`, { method: 'POST' });
+    const data = await r.json();
+    if (!r.ok) {
+      alert('Cleanup failed: ' + (data.detail || JSON.stringify(data)));
+      btn.disabled = false;
+      btn.innerHTML = '<i class="bi bi-trash"></i>';
+      return;
+    }
+    const msg = `Cleaned ${data.cleaned}, skipped ${data.skipped}, failed ${data.failed}`;
+    btn.innerHTML = '<i class="bi bi-check-lg text-success"></i>';
+    btn.title = msg;
+    if (data.failures && data.failures.length) {
+      console.warn('Cleanup failures:', data.failures);
+    }
+  } catch(e) {
+    alert('Error: ' + e);
+    btn.disabled = false;
+    btn.innerHTML = '<i class="bi bi-trash"></i>';
+  }
+}
+
+// ── History ───────────────────────────────────────────────────────────────────
+async function loadHistory() {
+  const tbody = document.getElementById('history-tbody');
+  tbody.innerHTML = `<tr><td colspan="6" class="text-center text-muted py-3">Loading…</td></tr>`;
+  try {
+    const runs = await apiGet('/api/history');
+    if (!runs.length) {
+      tbody.innerHTML = `<tr><td colspan="6" class="text-center text-muted py-3">No runs yet.</td></tr>`;
+      return;
+    }
+    tbody.innerHTML = runs.map(r => {
+      const badge = r.status === 'PASS' ? 'bg-success' : r.status === 'FAIL' ? 'bg-danger' : 'bg-secondary';
+      const hasVms = r.probe_mode && r.probe_mode.startsWith('in-guest');
+      return `<tr class="run-row">
+        <td onclick="viewRun('${r.run_id}')" style="cursor:pointer"><code class="text-muted">${r.run_id}</code></td>
+        <td onclick="viewRun('${r.run_id}')" style="cursor:pointer"><span class="badge ${badge}">${r.status}</span></td>
+        <td onclick="viewRun('${r.run_id}')" style="cursor:pointer"><span class="text-muted">${r.probe_mode}</span></td>
+        <td onclick="viewRun('${r.run_id}')" style="cursor:pointer" class="text-success">${r.passed}</td>
+        <td onclick="viewRun('${r.run_id}')" style="cursor:pointer" class="text-danger">${r.failed || '—'}</td>
+        <td onclick="viewRun('${r.run_id}')" style="cursor:pointer" class="text-muted">${r.total}</td>
+        <td><button class="btn btn-sm btn-outline-danger py-0" onclick="deleteVMs('${r.run_id}', this)" title="Delete test VMs for this run"><i class="bi bi-trash"></i></button></td>
+      </tr>`;
+    }).join('');
+  } catch(e) {
+    tbody.innerHTML = `<tr><td colspan="6" class="text-muted small">Error: ${e}</td></tr>`;
+  }
+}
+
+async function viewRun(runId) {
+  // Switch to Run tab
+  document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
+  document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+  document.querySelector('.nav-link[data-section="run"]').classList.add('active');
+  document.getElementById('section-run').classList.add('active');
+  document.getElementById('log-area').innerHTML = '';
+  appendLog(`▶ History view: ${runId}\n`, 'hdr');
+  document.getElementById('run-results').style.display = 'none';
+  try {
+    const result = await apiGet(`/api/run/${runId}/result`);
+    showResults(result);
+    setIndicator(result.FinalStatus === 'PASS' ? 'pass' : 'fail');
+  } catch(e) {
+    appendLog('Could not load result: ' + e + '\n', 'err');
+  }
+}
+
+// ── Utilities ─────────────────────────────────────────────────────────────────
+function esc(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function shorten(subnet) {
+  // e.g. "172.20.20.0/24" or "172.20.20.0" → "…20.0/24" or "…20.0"
+  return subnet.replace(/^(\d+\.\d+)\./, '…');
+}
+function flash(id, msg, ms = 2500) {
+  const el = document.getElementById(id);
+  el.textContent = msg;
+  setTimeout(() => el.textContent = '', ms);
+}
+
+// ── Init ─────────────────────────────────────────────────────────────────────
+loadConfig();
+</script>
+</body>
+</html>

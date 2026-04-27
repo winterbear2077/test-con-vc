@@ -1,0 +1,118 @@
+#!/bin/sh
+# /etc/local.d/netprobe.start
+#
+# Reads probe parameters from VMware guestinfo keys written by the test
+# controller via vCenter API (ReconfigVM_Task / extraConfig), configures the
+# network interface, runs ICMP probes, and writes the results back to guestinfo.
+#
+# No vgauth or Guest Operations API is required on the VM side.
+# Dependencies: open-vm-tools (vmtoolsd), iproute2 (ip), iputils (ping)
+#
+# Install in Alpine OVF:
+#   cp netprobe.start /etc/local.d/netprobe.start
+#   chmod +x /etc/local.d/netprobe.start
+#   rc-update add local default
+
+LOGFILE="/var/log/netprobe.log"
+exec >> "$LOGFILE" 2>&1
+
+echo "=== netprobe start $(date) ==="
+
+# Read parameters from guestinfo
+IP=$(vmtoolsd --cmd "info-get guestinfo.nettest.ip" 2>/dev/null)
+PREFIX=$(vmtoolsd --cmd "info-get guestinfo.nettest.prefix" 2>/dev/null)
+GW=$(vmtoolsd --cmd "info-get guestinfo.nettest.gw" 2>/dev/null)
+
+echo "  IP=$IP PREFIX=$PREFIX GW=$GW"
+
+# If no probe config injected yet, exit cleanly (fresh OVF boot without a test run).
+if [ -z "$IP" ] || [ "$IP" = "guestinfo: No value found" ]; then
+    echo "  No probe config found in guestinfo, exiting."
+    exit 0
+fi
+
+# Detect network interface (eth0 or ens192)
+IFACE=""
+for candidate in eth0 ens192 ens160 net0; do
+    if ip link show "$candidate" >/dev/null 2>&1; then
+        IFACE="$candidate"
+        break
+    fi
+done
+
+if [ -z "$IFACE" ]; then
+    echo "  ERROR: no network interface found"
+    vmtoolsd --cmd "info-set guestinfo.nettest.status error:no-iface"
+    exit 1
+fi
+
+echo "  Using interface: $IFACE"
+
+# Configure static IP first (so we are reachable once ready=go is set)
+ip addr flush dev "$IFACE" 2>/dev/null
+ip addr add "$IP/$PREFIX" dev "$IFACE"
+ip link set "$IFACE" up
+ip route replace default via "$GW" 2>/dev/null || ip route add default via "$GW"
+
+echo "  Network configured: $IP/$PREFIX gw=$GW on $IFACE"
+
+# Signal that network is up and we are waiting for the controller to say go.
+vmtoolsd --cmd "info-set guestinfo.nettest.status waiting"
+
+# ── Wait for controller to set guestinfo.nettest.ready = go ──────────────────
+# The controller writes this key only after ALL VMs in the same subnet are
+# tools-ready, ensuring intra-subnet peers exist before we ping them.
+WAIT_SECS=0
+MAX_WAIT=300
+echo "  Waiting for guestinfo.nettest.ready=go (max ${MAX_WAIT}s)..."
+while true; do
+    READY=$(vmtoolsd --cmd "info-get guestinfo.nettest.ready" 2>/dev/null)
+    if [ "$READY" = "go" ]; then
+        echo "  Got ready=go after ${WAIT_SECS}s"
+        break
+    fi
+    if [ "$WAIT_SECS" -ge "$MAX_WAIT" ]; then
+        echo "  Timed out waiting for ready=go after ${MAX_WAIT}s"
+        vmtoolsd --cmd "info-set guestinfo.nettest.status error:ready-timeout"
+        exit 1
+    fi
+    sleep 3
+    WAIT_SECS=$((WAIT_SECS + 3))
+done
+
+# Re-read targets (controller writes them together with ready=go)
+TARGETS=$(vmtoolsd --cmd "info-get guestinfo.nettest.targets" 2>/dev/null)
+echo "  TARGETS=$TARGETS"
+
+# Signal that we are probing
+vmtoolsd --cmd "info-set guestinfo.nettest.status running"
+
+# Run pings and collect results as "ip:PASS,ip:FAIL,..." string
+RESULTS=""
+OLD_IFS="$IFS"
+IFS=','
+for TARGET in $TARGETS; do
+    TARGET=$(echo "$TARGET" | tr -d ' ')
+    [ -z "$TARGET" ] && continue
+    ping -c 1 -W 2 "$TARGET" >/dev/null 2>&1
+    if [ $? -eq 0 ]; then
+        R="PASS"
+    else
+        R="FAIL"
+    fi
+    echo "  ping $TARGET -> $R"
+    if [ -n "$RESULTS" ]; then
+        RESULTS="${RESULTS},"
+    fi
+    RESULTS="${RESULTS}${TARGET}:${R}"
+done
+IFS="$OLD_IFS"
+
+echo "  Results: $RESULTS"
+
+# Write results back to guestinfo
+vmtoolsd --cmd "info-set guestinfo.nettest.results $RESULTS"
+vmtoolsd --cmd "info-set guestinfo.nettest.status done"
+
+echo "=== netprobe done ==="
+exit 0
