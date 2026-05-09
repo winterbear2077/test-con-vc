@@ -16,10 +16,6 @@ jobs:
             label: macos-arm64
             asset: vcnet-test-macos-arm64.tar.gz
 
-          - os: macos-13       # Intel x86_64
-            label: macos-x86_64
-            asset: vcnet-test-macos-x86_64.tar.gz
-
           - os: windows-latest
             label: windows-x64
             asset: vcnet-test-windows-x64.zip
