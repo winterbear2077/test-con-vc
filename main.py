@@ -34,9 +34,10 @@ def main() -> None:
         add_help=True,
     )
     parser.add_argument("--host", default="127.0.0.1", help="Bind address (default: 127.0.0.1)")
-    parser.add_argument("--port", type=int, default=8080, help="HTTP port (default: 8080)")
+    parser.add_argument("--port", type=int, default=0, help="HTTP port (default: 0 = random available port)")
     args, _ = parser.parse_known_args()
 
+    import socket
     import threading
     import webbrowser
     import uvicorn
@@ -44,11 +45,20 @@ def main() -> None:
     # in frozen mode because uvicorn can't find the module on disk.
     from web_app import app
 
-    url = f"http://{args.host if args.host != '0.0.0.0' else '127.0.0.1'}:{args.port}"
+    # Resolve port=0 to an actual free port before uvicorn binds.
+    port = args.port
+    if port == 0:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(("", 0))
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            port = s.getsockname()[1]
+
+    url = f"http://{args.host if args.host != '0.0.0.0' else '127.0.0.1'}:{port}"
+    print(f"Starting web UI → {url}")
     # Open browser after a short delay so uvicorn has time to bind the port.
     threading.Timer(1.2, webbrowser.open, args=[url]).start()
 
-    uvicorn.run(app, host=args.host, port=args.port)
+    uvicorn.run(app, host=args.host, port=port)
 
 
 if __name__ == "__main__":

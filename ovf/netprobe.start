@@ -56,6 +56,10 @@ ip route replace default via "$GW" 2>/dev/null || ip route add default via "$GW"
 
 echo "  Network configured: $IP/$PREFIX gw=$GW on $IFACE"
 
+# Brief pause to let ARP resolve after interface comes up (critical for
+# intra-subnet probes where both peers start simultaneously).
+sleep 2
+
 # Signal that network is up and we are waiting for the controller to say go.
 vmtoolsd --cmd "info-set guestinfo.nettest.status waiting"
 
@@ -94,12 +98,16 @@ IFS=','
 for TARGET in $TARGETS; do
     TARGET=$(echo "$TARGET" | tr -d ' ')
     [ -z "$TARGET" ] && continue
-    ping -c 1 -W 2 "$TARGET" >/dev/null 2>&1
-    if [ $? -eq 0 ]; then
-        R="PASS"
-    else
-        R="FAIL"
-    fi
+    # Retry up to 3 times: the first ping may be lost while ARP is being
+    # resolved (especially for intra-subnet peers that came up simultaneously).
+    R="FAIL"
+    for attempt in 1 2 3; do
+        if ping -c 1 -W 3 "$TARGET" >/dev/null 2>&1; then
+            R="PASS"
+            break
+        fi
+        [ "$attempt" -lt 3 ] && sleep 1
+    done
     echo "  ping $TARGET -> $R"
     if [ -n "$RESULTS" ]; then
         RESULTS="${RESULTS},"

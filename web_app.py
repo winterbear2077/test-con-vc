@@ -81,15 +81,21 @@ async def api_upload_input(file: UploadFile = File(...)):
     return {"ok": True, "path": name}
 
 @app.post("/api/upload/ovf")
-async def api_upload_ovf(file: UploadFile = File(...)):
-    """Upload an OVF descriptor and save to workspace/ovf/."""
-    name = Path(file.filename or "").name
-    if not name:
-        raise HTTPException(400, "No filename")
+async def api_upload_ovf(files: List[UploadFile] = File(...)):
+    """Upload all OVF bundle files (.ovf, .vmdk, .nvram, .mf, etc.) to workspace/ovf/."""
     ovf_dir = WORKSPACE / "ovf"
     ovf_dir.mkdir(exist_ok=True)
-    (ovf_dir / name).write_bytes(await file.read())
-    rel = f"./ovf/{name}"
+    ovf_name = None
+    for file in files:
+        name = Path(file.filename or "").name
+        if not name:
+            continue
+        (ovf_dir / name).write_bytes(await file.read())
+        if name.lower().endswith(".ovf"):
+            ovf_name = name
+    if not ovf_name:
+        raise HTTPException(400, "No .ovf file found in uploaded files")
+    rel = f"./ovf/{ovf_name}"
     cfg = _read_config()
     cfg["ovf_path"] = rel
     CONFIG_FILE.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")

@@ -5,16 +5,20 @@ Handles creation, configuration, and cleanup of test VMs.
 
 from __future__ import annotations
 
+import logging
 import os
+import random
 import time
 import ipaddress
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
+
+logger = logging.getLogger(__name__)
 
 from nettest.vcenter_utils import vcenter_session, wait_for_task
 from nettest.ovf_deploy import (
     deploy_ovf_vm, write_probe_guestinfo, write_probe_ready, poll_probe_results,
-    take_vm_snapshot, clone_vm_linked,
+    wait_for_probe_status, take_vm_snapshot, clone_vm_linked,
 )
 
 
@@ -133,9 +137,96 @@ def _allocate_ip_from_subnet(subnet_str: str, gateway_str: str, index: int = 0) 
         return allocated_ips[target_idx]
     
     except Exception as exc:
-        print(f"Warning: Failed to allocate IP from {subnet_str} (gw: {gateway_str}): {exc}")
+        logger.warning("Failed to allocate IP from %s (gw: %s): %s", subnet_str, gateway_str, exc)
         # Fallback: return a placeholder
         return f"10.0.0.{index + 1}"
+
+
+def _query_used_ips_in_subnet(content: Any, vim: Any, subnet_str: str) -> Set[str]:
+    """Query vCenter for all IPs currently assigned to VMs within *subnet_str*.
+
+    Uses a ContainerView over all VirtualMachine objects and reads
+    vm.guest.net[*].ipAddress — no SSH or Guest Ops required.
+    Returns a set of IP address strings (IPv4 only).
+    """
+    try:
+        if "/" not in subnet_str:
+            network = ipaddress.ip_network(f"{subnet_str}/24", strict=False)
+        else:
+            network = ipaddress.ip_network(subnet_str, strict=False)
+    except ValueError:
+        return set()
+
+    used: Set[str] = set()
+    try:
+        view = content.viewManager.CreateContainerView(
+            content.rootFolder, [vim.VirtualMachine], True
+        )
+        try:
+            for vm in view.view:
+                guest = getattr(vm, "guest", None)
+                for nic in getattr(guest, "net", None) or []:
+                    for ip_str in getattr(nic, "ipAddress", None) or []:
+                        try:
+                            addr = ipaddress.ip_address(ip_str)
+                            if isinstance(addr, ipaddress.IPv4Address) and addr in network:
+                                used.add(ip_str)
+                        except ValueError:
+                            pass
+        finally:
+            view.Destroy()
+    except Exception as exc:
+        logger.warning("Could not query used IPs in %s: %s", subnet_str, exc)
+    return used
+
+
+def _pick_random_free_ips(
+    subnet_str: str,
+    gateway_str: str,
+    count: int,
+    used_ips: Set[str],
+) -> List[str]:
+    """Return *count* randomly chosen free host IPs from *subnet_str*.
+
+    Excludes the network address, broadcast address, gateway, and any IP
+    already present in *used_ips* (from vCenter query or prior allocations
+    in this run).  Falls back to sequential allocation if the free pool is
+    exhausted.
+    """
+    try:
+        if "/" not in subnet_str:
+            network = ipaddress.ip_network(f"{subnet_str}/24", strict=False)
+        else:
+            network = ipaddress.ip_network(subnet_str, strict=False)
+        gateway_ip = ipaddress.ip_address(gateway_str)
+    except ValueError as exc:
+        logger.warning("Invalid subnet/gateway (%s/%s): %s", subnet_str, gateway_str, exc)
+        return [f"10.0.0.{i + 1}" for i in range(count)]
+
+    # Build candidate pool: all host IPs excluding gateway and already-used IPs.
+    # Skip the first 9 usable hosts (.1-.9) to avoid common infrastructure IPs.
+    all_hosts = list(network.hosts())
+    skip_low = min(9, len(all_hosts))
+    candidates = [
+        str(ip) for ip in all_hosts[skip_low:]
+        if ip != gateway_ip and str(ip) not in used_ips
+    ]
+
+    if len(candidates) >= count:
+        chosen = random.sample(candidates, count)
+    elif candidates:
+        logger.warning(
+            "Free IP pool in %s has only %d IPs, need %d; reusing pool",
+            subnet_str, len(candidates), count,
+        )
+        # Allow repeats only as last resort
+        chosen = [candidates[i % len(candidates)] for i in range(count)]
+    else:
+        logger.warning("No free IPs found in %s; falling back to sequential", subnet_str)
+        chosen = [
+            _allocate_ip_from_subnet(subnet_str, gateway_str, i) for i in range(count)
+        ]
+    return chosen
 
 
 def _find_datacenter(content: Any, datacenter_name: str, vim: Any) -> Any:
@@ -253,13 +344,18 @@ def provision_test_vms(
     if not args.execute_vcenter:
         # In dry-run mode, simulate VM instances
         instances = []
+        _dry_run_used: Dict[str, Set[str]] = {}
         for i, row in enumerate(test_rows):
             placement_key = (row.datacenter, row.cluster)
             if placement_key not in placements:
                 continue
-            for vm_idx in range(max(1, vms_per_subnet)):
+            n_vms = max(1, vms_per_subnet)
+            used_set = _dry_run_used.setdefault(row.subnet, set())
+            ips = _pick_random_free_ips(row.subnet, row.gw, n_vms, used_set)
+            used_set.update(ips)
+            for vm_idx in range(n_vms):
                 vm_name = f"{args.vm_prefix}-{run_id}-{i:04d}-{vm_idx}"
-                ip_addr = _allocate_ip_from_subnet(row.subnet, row.gw, vm_idx)
+                ip_addr = ips[vm_idx]
                 instances.append(
                     VMInstance(
                         datacenter=row.datacenter,
@@ -349,8 +445,10 @@ def provision_test_vms(
                 raise RuntimeError(f"VM root folder not found in {dc_name_s}")
 
             seed_name = f"{args.vm_prefix}-{run_id}-seed-{cl_name_s.lower().replace(' ', '-')}"
-            print(f"Deploying OVF seed VM '{seed_name}' for cluster {cl_name_s} "
-                  f"(host={host_obj_s.name}, ds={datastore_obj_s.name})...", flush=True)
+            logger.info(
+                "Deploying OVF seed VM '%s' for cluster %s (host=%s, ds=%s)...",
+                seed_name, cl_name_s, host_obj_s.name, datastore_obj_s.name,
+            )
 
             # Use any accessible portgroup on this cluster for the seed NIC;
             # each clone will have its NIC reconfigured to the correct VLAN.
@@ -366,9 +464,9 @@ def provision_test_vms(
                 datastore_obj=datastore_obj_s, vm_folder=vm_folder_s,
                 host_obj=host_obj_s, dpg_key=seed_dpg_key,
             )
-            print(f"  Seed deployed: {seed_name}; taking snapshot...", flush=True)
+            logger.info("Seed deployed: %s; taking snapshot...", seed_name)
             snap_ref = take_vm_snapshot(vim, seed_vm_obj, snap_name="nettest-base")
-            print(f"  Snapshot taken on {seed_name}", flush=True)
+            logger.info("Snapshot taken on %s", seed_name)
 
             seed_vm_map[(dc_name_s, cl_name_s)]  = seed_vm_obj
             seed_snap_map[(dc_name_s, cl_name_s)] = snap_ref
@@ -416,11 +514,16 @@ def provision_test_vms(
             )
             prefix_len = net_obj.prefixlen
 
-            # Pre-allocate IPs for all VMs in this subnet
-            alloc_ips = [
-                _allocate_ip_from_subnet(subnet, row.gw, vm_idx)
-                for vm_idx in range(max(1, vms_per_subnet))
-            ]
+            # Pre-allocate IPs for all VMs in this subnet.
+            # Query vCenter for IPs already in use so we never collide with
+            # existing VMs on the same segment, then pick randomly from free pool.
+            n_vms = max(1, vms_per_subnet)
+            used_ips = _query_used_ips_in_subnet(content, vim, subnet)
+            logger.info(
+                "Subnet %s: %d IPs in use by existing VMs, picking %d free IPs randomly",
+                subnet, len(used_ips), n_vms,
+            )
+            alloc_ips = _pick_random_free_ips(subnet, row.gw, n_vms, used_ips)
 
             # Build complete per-VM probe target lists up front (intra + cross).
             # All targets are written BEFORE power-on so netprobe.start always
@@ -505,10 +608,10 @@ def provision_test_vms(
                         f"No accessible datastore on host {host_obj_for_vm.name} in {cl_name}"
                     )
 
-                print(f"Cloning VM '{vm_name}' from seed "
-                      f"(ip={alloc_ip}, vm_idx={vm_idx}, host={host_obj_for_vm.name}, "
-                      f"ds={datastore_obj_for_vm.name})...",
-                      flush=True)
+                logger.info(
+                    "Cloning VM '%s' from seed (ip=%s, vm_idx=%s, host=%s, ds=%s)...",
+                    vm_name, alloc_ip, vm_idx, host_obj_for_vm.name, datastore_obj_for_vm.name,
+                )
                 seed_vm_obj = seed_vm_map[(dc_name, cl_name)]
                 seed_snap   = seed_snap_map[(dc_name, cl_name)]
                 vm_obj = clone_vm_linked(
@@ -519,7 +622,7 @@ def provision_test_vms(
                     resource_pool=resource_pool, vm_folder=vm_folder,
                     dpg_key=network_binding.dpg_key,
                 )
-                print(f"  Cloned: {vm_name}", flush=True)
+                logger.info("Cloned: %s", vm_name)
 
                 write_probe_guestinfo(
                     vim=vim, vm_obj=vm_obj,
@@ -527,7 +630,7 @@ def provision_test_vms(
                     targets=all_targets, ready=ready_val,
                 )
                 wait_for_task(vm_obj.PowerOnVM_Task())
-                print(f"  Powered on: {vm_name} (ready={ready_val}, host={host_obj_for_vm.name})", flush=True)
+                logger.info("Powered on: %s (ready=%s, host=%s)", vm_name, ready_val, host_obj_for_vm.name)
                 subnet_vm_objs.append(vm_obj)
 
             # ── Phase 2: Wait for ALL VMs in this subnet to be tools-ready ───
@@ -535,23 +638,37 @@ def provision_test_vms(
             subnet_tools_ok: List[bool] = []
             for vm_idx, vm_obj in enumerate(subnet_vm_objs):
                 vm_name = vm_obj.name
-                print(f"Waiting for VMware Tools on {vm_name} (timeout={vmtools_timeout}s)...", flush=True)
+                logger.info("Waiting for VMware Tools on %s (timeout=%ss)...", vm_name, vmtools_timeout)
                 tools_ok = _wait_for_vmtools(vm_obj, vmtools_timeout)
                 if not tools_ok:
-                    print(f"Warning: VMware Tools not ready on {vm_name}", flush=True)
+                    logger.warning("VMware Tools not ready on %s", vm_name)
                 else:
-                    print(f"VMware Tools running on {vm_name}", flush=True)
+                    logger.info("VMware Tools running on %s", vm_name)
                 subnet_tools_ok.append(tools_ok)
 
             # ── Phase 3: Signal go to VMs that were held at ready=wait ────────
-            # Targets were already written before power-on; only flip ready=go.
-            # Both intra-sources and intra-destinations are signalled here so
-            # that sources only start pinging once all destinations have their
-            # network interfaces configured (destinations are past the ip-addr
-            # step when they reach the polling loop).
+            # Wait for ALL held VMs to reach status=waiting before sending go
+            # to ANY of them.  The VM sets status=waiting only after completing
+            # "ip addr add" + "ip link set up", so this guarantees every peer's
+            # network interface is fully configured before the first ping runs.
+            # VMware Tools can report guestToolsRunning well before init scripts
+            # execute, so waiting for Tools alone is insufficient.
             for vm_idx, vm_obj in enumerate(subnet_vm_objs):
                 if vm_needs_wait[vm_idx]:
-                    print(f"  Setting ready=go for {vm_obj.name}", flush=True)
+                    logger.info(
+                        "Waiting for network-ready signal (status=waiting) on %s...",
+                        vm_obj.name,
+                    )
+                    ok = wait_for_probe_status(vm_obj, "waiting", timeout_sec=300)
+                    if not ok:
+                        logger.warning(
+                            "VM %s did not reach status=waiting in time; "
+                            "sending ready=go anyway (probe may fail)",
+                            vm_obj.name,
+                        )
+            for vm_idx, vm_obj in enumerate(subnet_vm_objs):
+                if vm_needs_wait[vm_idx]:
+                    logger.info("Setting ready=go for %s", vm_obj.name)
                     write_probe_ready(vim=vim, vm_obj=vm_obj)
 
             # ── Phase 4: Poll each VM for probe results ────────────────────────
@@ -563,13 +680,13 @@ def provision_test_vms(
 
                 vm_probe_results: Dict[str, str] = {}
                 if all_targets and tools_ok:
-                    print(f"  Waiting for probe results from {vm_name} (timeout=180s)...", flush=True)
+                    logger.info("Waiting for probe results from %s (timeout=180s)...", vm_name)
                     result = poll_probe_results(vm_obj, timeout_sec=180)
                     if result is not None:
                         vm_probe_results = result
-                        print(f"  Probe results: {vm_probe_results}", flush=True)
+                        logger.info("Probe results: %s", vm_probe_results)
                     else:
-                        print(f"  Warning: no probe results received from {vm_name}", flush=True)
+                        logger.warning("No probe results received from %s", vm_name)
 
                 instances.append(
                     VMInstance(
@@ -588,8 +705,8 @@ def provision_test_vms(
                         probe_results=vm_probe_results,
                     )
                 )
-                print(f"Created {vm_name} (moid={instances[-1].moid}, ip={alloc_ip}) "
-                      f"on VLAN {vlan_id} vm_idx={vm_idx}")
+                logger.info("Created %s (moid=%s, ip=%s) on VLAN %s vm_idx=%s",
+                            vm_name, instances[-1].moid, alloc_ip, vlan_id, vm_idx)
 
         # Append seed VMs at the end so the runner can clean them up last.
         # They are marked with a special dpg_name so callers can distinguish.

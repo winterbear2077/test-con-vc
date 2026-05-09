@@ -7,6 +7,7 @@ via the VMware Guest Operations API — no ISO boot, no CD drives.
 
 from __future__ import annotations
 
+import logging
 import os
 import ssl
 import threading
@@ -16,6 +17,8 @@ from typing import Any, Dict, List, Optional
 
 import requests
 import urllib3
+
+logger = logging.getLogger(__name__)
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -192,7 +195,7 @@ def deploy_ovf_vm(
             if not os.path.isfile(file_path):
                 raise RuntimeError(f"OVF referenced file not found: {file_path}")
             size_mb = os.path.getsize(file_path) // (1024 * 1024)
-            print(f"  Uploading {file_name} ({size_mb} MB) to {upload_url[:80]}...", flush=True)
+            logger.info("Uploading %s (%s MB) to %s...", file_name, size_mb, upload_url[:80])
             _upload_file(upload_url, file_path, session_id)
 
         stop_evt.set()
@@ -280,6 +283,38 @@ def write_probe_ready(vim: Any, vm_obj: Any) -> None:
     wait_for_task(vm_obj.ReconfigVM_Task(spec))
 
 
+def wait_for_probe_status(
+    vm_obj: Any,
+    target_status: str,
+    timeout_sec: int = 300,
+) -> bool:
+    """Block until guestinfo.nettest.status equals *target_status* or timeout.
+
+    Returns True when the status is reached, False on timeout.
+    Used to confirm a VM's network is fully configured before signalling go.
+    """
+    deadline = time.time() + timeout_sec
+    while time.time() < deadline:
+        extra = {
+            e.key: e.value
+            for e in (
+                getattr(getattr(vm_obj, "config", None), "extraConfig", None) or []
+            )
+        }
+        status = extra.get("guestinfo.nettest.status", "")
+        if status == target_status:
+            return True
+        if str(status).startswith("error:"):
+            logger.warning("VM %s reported error status: %s", vm_obj.name, status)
+            return False
+        time.sleep(3)
+    logger.warning(
+        "Timed out waiting for probe status '%s' on %s after %ss",
+        target_status, vm_obj.name, timeout_sec,
+    )
+    return False
+
+
 def poll_probe_results(
     vm_obj: Any,
     timeout_sec: int = 180,
@@ -300,7 +335,7 @@ def poll_probe_results(
         }
         status = extra.get("guestinfo.nettest.status", "pending")
         if status != last_status:
-            print(f"    probe status: {status}", flush=True)
+            logger.debug("probe status: %s", status)
             last_status = status
         if status == "done":
             raw = extra.get("guestinfo.nettest.results", "")
@@ -312,10 +347,10 @@ def poll_probe_results(
                     results[ip.strip()] = outcome.strip().upper()
             return results
         if str(status).startswith("error:"):
-            print(f"  VM probe script error: {status}", flush=True)
+            logger.error("VM probe script error: %s", status)
             return None
         time.sleep(5)
-    print(f"  Timed out waiting for probe results on {vm_obj.name} after {timeout_sec}s", flush=True)
+    logger.warning("Timed out waiting for probe results on %s after %ss", vm_obj.name, timeout_sec)
     return None
 
 

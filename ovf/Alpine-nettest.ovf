@@ -1,8 +1,8 @@
 <?xml version='1.0' encoding='UTF-8'?>
 <Envelope xmlns="http://schemas.dmtf.org/ovf/envelope/1" xmlns:ovf="http://schemas.dmtf.org/ovf/envelope/1" xmlns:vmw="http://www.vmware.com/schema/ovf" xmlns:rasd="http://schemas.dmtf.org/wbem/wscim/1/cim-schema/2/CIM_ResourceAllocationSettingData" xmlns:vssd="http://schemas.dmtf.org/wbem/wscim/1/cim-schema/2/CIM_VirtualSystemSettingData">
   <References>
-    <File ovf:id="file1" ovf:href="Alpine-nettest-1.vmdk"/>
-    <File ovf:id="file2" ovf:href="Alpine-nettest-2.nvram" ovf:size="270840"/>
+    <File ovf:id="file1" ovf:href="Alpine-Nettest-1.vmdk"/>
+    <File ovf:id="file2" ovf:href="Alpine-Nettest-2.nvram" ovf:size="270840"/>
   </References>
   <DiskSection>
     <Info>List of the virtual disks</Info>
@@ -10,13 +10,13 @@
   </DiskSection>
   <NetworkSection>
     <Info>The list of logical networks</Info>
-    <Network ovf:name="ABH-CL02-MNGT">
-      <Description>The ABH-CL02-MNGT network</Description>
+    <Network ovf:name="ABH-CL03-MNGT">
+      <Description>The ABH-CL03-MNGT network</Description>
     </Network>
   </NetworkSection>
-  <VirtualSystem ovf:id="Alpine-nettest">
+  <VirtualSystem ovf:id="Alpine-Nettest">
     <Info>A Virtual system</Info>
-    <Name>Alpine-nettest</Name>
+    <Name>Alpine-Nettest</Name>
     <OperatingSystemSection ovf:id="100" vmw:osType="other6xLinux64Guest">
       <Info>The operating system installed</Info>
       <Description>Other 6.x or later Linux (64-bit)</Description>
@@ -74,27 +74,27 @@
       <Item>
         <rasd:AddressOnParent>0</rasd:AddressOnParent>
         <rasd:AutomaticAllocation>true</rasd:AutomaticAllocation>
-        <rasd:Connection>ABH-CL02-MNGT</rasd:Connection>
+        <rasd:Connection>ABH-CL03-MNGT</rasd:Connection>
         <rasd:ElementName>Network adapter 1</rasd:ElementName>
         <rasd:InstanceID>6</rasd:InstanceID>
         <rasd:ResourceSubType>VmxNet3</rasd:ResourceSubType>
         <rasd:ResourceType>10</rasd:ResourceType>
         <vmw:Config ovf:required="false" vmw:key="connectable.allowGuestControl" vmw:value="false"/>
-        <vmw:Config ovf:required="false" vmw:key="wakeOnLanEnabled" vmw:value="true"/>
-        <vmw:Config ovf:required="false" vmw:key="uptCompatibilityEnabled" vmw:value="true"/>
         <vmw:Config ovf:required="false" vmw:key="slotInfo.pciSlotNumber" vmw:value="33"/>
         <vmw:Config ovf:required="false" vmw:key="uptv2Enabled" vmw:value="false"/>
+        <vmw:Config ovf:required="false" vmw:key="wakeOnLanEnabled" vmw:value="true"/>
+        <vmw:Config ovf:required="false" vmw:key="uptCompatibilityEnabled" vmw:value="true"/>
       </Item>
       <Item ovf:required="false">
         <rasd:ElementName>Video card</rasd:ElementName>
         <rasd:InstanceID>7</rasd:InstanceID>
         <rasd:ResourceType>24</rasd:ResourceType>
-        <vmw:Config ovf:required="false" vmw:key="videoRamSizeInKB" vmw:value="4096"/>
         <vmw:Config ovf:required="false" vmw:key="graphicsMemorySizeInKB" vmw:value="262144"/>
+        <vmw:Config ovf:required="false" vmw:key="videoRamSizeInKB" vmw:value="4096"/>
         <vmw:Config ovf:required="false" vmw:key="enable3DSupport" vmw:value="false"/>
+        <vmw:Config ovf:required="false" vmw:key="useAutoDetect" vmw:value="false"/>
         <vmw:Config ovf:required="false" vmw:key="numDisplays" vmw:value="1"/>
         <vmw:Config ovf:required="false" vmw:key="use3dRenderer" vmw:value="automatic"/>
-        <vmw:Config ovf:required="false" vmw:key="useAutoDetect" vmw:value="false"/>
       </Item>
       <vmw:Config ovf:required="false" vmw:key="cpuHotAddEnabled" vmw:value="false"/>
       <vmw:Config ovf:required="false" vmw:key="sgxInfo.epcSize" vmw:value="0"/>

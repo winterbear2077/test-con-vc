@@ -1,0 +1,95 @@
+name: Build Multi-Platform Binaries
+
+on:
+  push:
+    tags:
+      - "v*"          # trigger on version tags: v1.0.0, v1.2.3, etc.
+  workflow_dispatch:  # allow manual trigger from GitHub Actions UI
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14       # Apple Silicon (arm64)
+            label: macos-arm64
+            asset: vcnet-test-macos-arm64.tar.gz
+
+          - os: macos-13       # Intel x86_64
+            label: macos-x86_64
+            asset: vcnet-test-macos-x86_64.tar.gz
+
+          - os: windows-latest
+            label: windows-x64
+            asset: vcnet-test-windows-x64.zip
+
+          - os: ubuntu-22.04
+            label: linux-x86_64
+            asset: vcnet-test-linux-x86_64.tar.gz
+
+    runs-on: ${{ matrix.os }}
+    name: Build (${{ matrix.label }})
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      # uvloop is not available on Windows — skip it there
+      - name: Install uvloop (non-Windows)
+        if: runner.os != 'Windows'
+        run: pip install uvloop
+
+      - name: Build with PyInstaller
+        run: pyinstaller vcnet-test.spec --clean
+
+      - name: Package (macOS / Linux)
+        if: runner.os != 'Windows'
+        run: |
+          cd dist
+          tar -czf ../${{ matrix.asset }} vcnet-test/
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Compress-Archive -Path dist\vcnet-test -DestinationPath ${{ matrix.asset }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.label }}
+          path: ${{ matrix.asset }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-22.04
+    # Only create a release when triggered by a version tag
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          generate_release_notes: true

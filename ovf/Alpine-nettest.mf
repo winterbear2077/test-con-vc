@@ -1,3 +1,3 @@
-SHA256(Alpine-nettest-1.vmdk)= 071f99ceb4621c470c0dd95c02972114f18516e89d9f9d2015cb4ba5eec9a2fa
-SHA256(Alpine-nettest.ovf)= 0ce5a1b6f96e1d130a4036b6c4889d658982ad4edd0390a4be2c942b559348da
-SHA256(Alpine-nettest-2.nvram)= 0f2dc5bc2025b609ff6cd6db1acac9ef4f8ec32876dda4f01c25ee7bea89040c
+SHA256(Alpine-Nettest.ovf)= 9989176b2704aef841b60f4345ee324c98cfa7bd99daaf370231e60a10702557
+SHA256(Alpine-Nettest-1.vmdk)= 5b05ced821bda13d08370af0c5daf58a55653053fa9307ac61834f8913f6b63c
+SHA256(Alpine-Nettest-2.nvram)= bb4f1e8d88ea27be0a871c9045ce200ad21ce57cdd63af6aba6ab3a1a4af85e9

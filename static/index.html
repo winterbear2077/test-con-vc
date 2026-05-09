@@ -151,9 +151,9 @@
                 <label class="form-label fw-semibold small">OVF Template Path</label>
                 <div class="input-group input-group-sm">
                   <input id="cfg-ovf_path" type="text" class="form-control form-control-sm" placeholder="./ovf/Alpine-nettest.ovf">
-                  <label class="btn btn-outline-secondary mb-0 px-2" title="Browse OVF file">
+                  <label class="btn btn-outline-secondary mb-0 px-2" title="select all files in the OVF folder (.ovf + .vmdk + .nvram + .mf + netprobe.start etc.)">
                     <i class="bi bi-folder2-open"></i>
-                    <input type="file" accept=".ovf,.vmx" style="display:none" onchange="uploadFile(this,'ovf')">
+                    <input type="file" multiple style="display:none" onchange="uploadFile(this,'ovf')">
                   </label>
                 </div>
               </div>
@@ -291,18 +291,26 @@
             <label class="form-label small fw-semibold mb-1">VMs/Subnet</label>
             <input id="run-vms_per_subnet" type="number" min="1" max="8" value="1"
               class="form-control form-control-sm" style="width:72px"
-              title="Number of VMs per subnet. Use ≥2 to enable intra-subnet phase">
+              title="Number of VMs per subnet. Must be &ge;2 to enable Intra-Subnet phase"
+              oninput="_onVmsPerSubnetChange()">
+            <div id="vms-per-subnet-warn" class="text-warning small mt-1" style="display:none;white-space:nowrap">
+              <i class="bi bi-exclamation-triangle-fill me-1"></i>Must be &ge;2 for Intra-Subnet
+            </div>
           </div>
           <div class="col-auto">
             <label class="form-label small fw-semibold mb-1">Max VMs/Phase</label>
             <input id="run-max_vms_per_phase" type="number" min="2" max="100" value="20"
               class="form-control form-control-sm" style="width:80px">
           </div>
-          <div class="col-lg">
-            <label class="form-label small fw-semibold mb-1">Phases</label>
+          <div class="col-lg" id="phases-section">
+            <label class="form-label small fw-semibold mb-1">Phases
+              <span id="phases-disabled-hint" class="text-muted fw-normal ms-1"
+                style="display:none">(enable Phased Testing)</span>
+            </label>
             <div class="d-flex flex-wrap gap-2">
               <div class="form-check form-check-inline mb-0">
-                <input class="form-check-input phase-chk" type="checkbox" id="ph-intra-subnet" value="intra-subnet">
+                <input class="form-check-input phase-chk" type="checkbox" id="ph-intra-subnet" value="intra-subnet"
+                  onchange="_onIntraSubnetToggle(this)">
                 <label class="form-check-label small" for="ph-intra-subnet">Intra-Subnet</label>
               </div>
               <div class="form-check form-check-inline mb-0">
@@ -325,7 +333,8 @@
               <label class="form-check-label small" for="run-execute_vcenter">Execute vCenter</label>
             </div>
             <div class="form-check form-switch mb-0">
-              <input id="run-phased_testing" class="form-check-input" type="checkbox">
+              <input id="run-phased_testing" class="form-check-input" type="checkbox"
+                onchange="_onPhasedTestingToggle(this)">
               <label class="form-check-label small" for="run-phased_testing">Phased Testing</label>
             </div>
             <div class="form-check form-switch mb-0">
@@ -394,8 +403,72 @@
 
 </div><!-- /main -->
 
+<!-- ── Error Modal ──────────────────────────────────────────────────────── -->
+<div class="modal fade" id="errorModal" tabindex="-1" aria-labelledby="errorModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered modal-lg">
+    <div class="modal-content border-danger">
+      <div class="modal-header bg-danger text-white py-2">
+        <h6 class="modal-title mb-0" id="errorModalLabel">
+          <i class="bi bi-exclamation-triangle-fill me-2"></i><span id="error-modal-title">Error</span>
+        </h6>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body p-3">
+        <pre id="error-modal-body" class="mb-0 small"
+          style="white-space:pre-wrap;word-break:break-word;max-height:420px;overflow-y:auto"></pre>
+      </div>
+      <div class="modal-footer py-2">
+        <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <script src="/static/bootstrap.bundle.min.js"></script>
 <script>
+// ── Error modal ──────────────────────────────────────────────────────────────
+function showError(title, err) {
+  let msg;
+  if (err instanceof Error) {
+    msg = err.message;
+    // Try to parse FastAPI detail from JSON error body
+    try {
+      const parsed = JSON.parse(err.message);
+      const detail = parsed?.detail;
+      if (detail && typeof detail === 'object') {
+        msg = detail.error || JSON.stringify(detail, null, 2);
+      } else if (detail) {
+        msg = String(detail);
+      }
+    } catch { /* not JSON, use as-is */ }
+  } else if (typeof err === 'object' && err !== null) {
+    msg = JSON.stringify(err, null, 2);
+  } else {
+    msg = String(err);
+  }
+  document.getElementById('error-modal-title').textContent = title || 'Error';
+  document.getElementById('error-modal-body').textContent = msg;
+  bootstrap.Modal.getOrCreate(document.getElementById('errorModal')).show();
+}
+
+// ── OVF bundle validation (client-side, before upload) ────────────────────────
+async function _validateOvfBundle(files) {
+  const ovfFile = [...files].find(f => f.name.toLowerCase().endsWith('.ovf'));
+  if (!ovfFile) return [];
+  const text = await ovfFile.text();
+  const doc = new DOMParser().parseFromString(text, 'application/xml');
+  const selectedNames = new Set([...files].map(f => f.name));
+  const missing = [];
+  doc.querySelectorAll('References File').forEach(el => {
+    // ovf:href is a namespaced attribute — try both forms
+    const href = el.getAttributeNS('http://schemas.dmtf.org/ovf/envelope/1', 'href')
+                 || el.getAttribute('ovf:href')
+                 || el.getAttribute('href');
+    if (href && !selectedNames.has(href)) missing.push(href);
+  });
+  return missing;
+}
+
 // ── Navigation ────────────────────────────────────────────────────────────────
 document.querySelectorAll('.nav-link[data-section]').forEach(link => {
   link.addEventListener('click', e => {
@@ -444,22 +517,36 @@ async function saveConfig() {
     });
     await apiPut('/api/config', { data: cfg });
     flash('cfg-msg', '✓ Saved');
-  } catch(e) { alert('Save failed: ' + e); }
+  } catch(e) { showError('Save Failed', e); }
 }
 
 async function uploadFile(input, type) {
   if (!input.files.length) return;
-  const file = input.files[0];
   const fd = new FormData();
-  fd.append('file', file);
+  if (type === 'ovf') {
+    // Validate that all files referenced in the .ovf descriptor are selected
+    const missing = await _validateOvfBundle(input.files);
+    if (missing.length) {
+      showError('OVF Bundle Incomplete',
+        'The following files referenced in the .ovf descriptor are missing from your selection:\n\n' +
+        missing.map(f => '  • ' + f).join('\n') +
+        '\n\nPlease select ALL files in the OVF directory together (.ovf, .vmdk, .nvram, .mf, etc.).');
+      input.value = '';
+      return;
+    }
+    // Send all selected files (entire OVF bundle: .ovf + .vmdk + .nvram + .mf)
+    for (const f of input.files) fd.append('files', f);
+  } else {
+    fd.append('file', input.files[0]);
+  }
   try {
     const r = await fetch(`/api/upload/${type}`, { method: 'POST', body: fd });
     if (!r.ok) throw new Error(await r.text());
     const { path } = await r.json();
     document.getElementById(type === 'ovf' ? 'cfg-ovf_path' : 'cfg-input').value = path;
-    flash('cfg-msg', `✓ Uploaded ${file.name}`);
+    flash('cfg-msg', `✓ Uploaded ${input.files.length} file(s)`);
   } catch(e) {
-    alert('Upload failed: ' + e);
+    showError('Upload Failed', e);
   }
   input.value = '';
 }
@@ -486,7 +573,8 @@ async function loadVcenterInventory() {
     refreshVrfSelects();
     flash('input-msg', `✓ Loaded ${(_vcInventory.datacenters||[]).length} DC(s) from vCenter`);
   } catch(e) {
-    flash('input-msg', '✗ ' + (e.message || e), 5000);
+    flash('input-msg', '✗ Sync failed', 4000);
+    showError('vCenter Sync Failed', e);
   } finally {
     if (btn) { btn.disabled = false; btn.innerHTML = '<i class="bi bi-cloud-download me-1"></i>Sync from vCenter'; }
   }
@@ -629,7 +717,33 @@ async function saveInput() {
   try {
     await apiPut('/api/input', { rows });
     flash('input-msg', '✓ Saved');
-  } catch(e) { alert('Save failed: ' + e); }
+  } catch(e) { showError('Save Failed', e); }
+}
+
+function _onPhasedTestingToggle(chk) {
+  const on = chk.checked;
+  document.querySelectorAll('.phase-chk').forEach(c => { c.disabled = !on; });
+  const hint = document.getElementById('phases-disabled-hint');
+  if (hint) hint.style.display = on ? 'none' : '';
+  const maxVmsPerPhase = document.getElementById('run-max_vms_per_phase');
+  if (maxVmsPerPhase) maxVmsPerPhase.disabled = !on;
+}
+
+function _onIntraSubnetToggle(chk) {
+  if (chk.checked) {
+    const vmsInput = document.getElementById('run-vms_per_subnet');
+    if (parseInt(vmsInput.value) < 2) {
+      vmsInput.value = 2;
+    }
+  }
+  _onVmsPerSubnetChange();
+}
+
+function _onVmsPerSubnetChange() {
+  const chk  = document.getElementById('ph-intra-subnet');
+  const warn = document.getElementById('vms-per-subnet-warn');
+  const val  = parseInt(document.getElementById('run-vms_per_subnet').value);
+  warn.style.display = (chk && chk.checked && val < 2) ? '' : 'none';
 }
 
 // ── Run ───────────────────────────────────────────────────────────────────────
@@ -642,13 +756,25 @@ async function startRun() {
   setIndicator('running');
 
   const selectedPhases = [...document.querySelectorAll('.phase-chk:checked')].map(c => c.value);
+  const vmsPerSubnet = parseInt(document.getElementById('run-vms_per_subnet').value) || 1;
+
+  // Guard: intra-subnet phase requires vms_per_subnet >= 2
+  if (selectedPhases.includes('intra-subnet') && vmsPerSubnet < 2) {
+    showError('Configuration Error',
+      'The Intra-Subnet phase requires VMs/Subnet ≥ 2 (currently ' + vmsPerSubnet + ').\n\n' +
+      'Please increase VMs/Subnet to at least 2 before running.');
+    document.getElementById('btn-run').disabled = false;
+    setIndicator('idle');
+    return;
+  }
+
   const req = {
     execute_vcenter:    document.getElementById('run-execute_vcenter').checked,
     probe_mode:         document.getElementById('run-probe_mode').value,
     max_retries:        parseInt(document.getElementById('run-max_retries').value) || 0,
     cleanup_on_failure: document.getElementById('run-cleanup_on_failure').checked,
     phased_testing:     document.getElementById('run-phased_testing').checked,
-    vms_per_subnet:     parseInt(document.getElementById('run-vms_per_subnet').value) || 1,
+    vms_per_subnet:     vmsPerSubnet,
     max_vms_per_phase:  parseInt(document.getElementById('run-max_vms_per_phase').value) || 20,
     phases:             selectedPhases.join(','),
     vrf_links:          getVrfLinks(),
@@ -1068,21 +1194,23 @@ async function deleteVMs(runId, btn) {
     const r = await fetch(`/api/run/${runId}/cleanup`, { method: 'POST' });
     const data = await r.json();
     if (!r.ok) {
-      alert('Cleanup failed: ' + (data.detail || JSON.stringify(data)));
       btn.disabled = false;
       btn.innerHTML = '<i class="bi bi-trash"></i>';
+      showError('Cleanup Failed', data.detail || JSON.stringify(data, null, 2));
       return;
     }
     const msg = `Cleaned ${data.cleaned}, skipped ${data.skipped}, failed ${data.failed}`;
     btn.innerHTML = '<i class="bi bi-check-lg text-success"></i>';
     btn.title = msg;
     if (data.failures && data.failures.length) {
-      console.warn('Cleanup failures:', data.failures);
+      showError('Partial Cleanup Failure',
+        `${data.failed} VM(s) could not be deleted:\n\n` +
+        data.failures.map(f => `  • ${f.vm_name || f.moid}: ${f.error}`).join('\n'));
     }
   } catch(e) {
-    alert('Error: ' + e);
     btn.disabled = false;
     btn.innerHTML = '<i class="bi bi-trash"></i>';
+    showError('Cleanup Error', e);
   }
 }
 
@@ -1148,6 +1276,8 @@ function flash(id, msg, ms = 2500) {
 
 // ── Init ─────────────────────────────────────────────────────────────────────
 loadConfig();
+// Apply initial disabled state for Phases (Phased Testing is off by default)
+_onPhasedTestingToggle(document.getElementById('run-phased_testing'));
 </script>
 </body>
 </html>

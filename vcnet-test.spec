@@ -13,8 +13,11 @@
 #   artifacts/            (created on first run)
 
 from PyInstaller.utils.hooks import collect_submodules, collect_data_files
+import sys as _sys
 
 # ── Hidden imports ─────────────────────────────────────────────────────────────
+_uvloop = [] if _sys.platform == "win32" else collect_submodules("uvloop")
+
 hiddenimports = (
     collect_submodules("uvicorn")
     + collect_submodules("fastapi")
@@ -26,6 +29,7 @@ hiddenimports = (
     + collect_submodules("paramiko")
     + collect_submodules("requests")
     + collect_submodules("nettest")
+    + _uvloop
     + [
         "email.mime.text",
         "email.mime.multipart",

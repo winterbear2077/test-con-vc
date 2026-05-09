@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import logging
 import subprocess
 import time
 from typing import Any, Dict, List, Optional, Sequence
+
+logger = logging.getLogger(__name__)
 
 from nettest.models import TestCase, TestResult
 
@@ -72,7 +75,7 @@ def _guest_ops_ping(
         return None
 
     except Exception as exc:
-        print(f"Guest Ops ping failed (-> {target_ip}): {exc}")
+        logger.warning("Guest Ops ping failed (-> %s): %s", target_ip, exc)
         return None
 
 
@@ -121,7 +124,7 @@ def _ssh_ping_from_vm(
         ssh.close()
         return exit_code == 0
     except Exception as exc:
-        print(f"SSH ping failed ({vm_ip} -> {target_ip}): {exc}")
+        logger.warning("SSH ping failed (%s -> %s): %s", vm_ip, target_ip, exc)
         return None
 
 
@@ -337,7 +340,7 @@ def run_icmp_checks(
                     )
                     probe_reason = "guest-ops-icmp-from-src-vm"
                 else:
-                    print(f"Warning: VM {src_vm.moid} not found via vCenter for Guest Ops ping")
+                    logger.warning("VM %s not found via vCenter for Guest Ops ping", src_vm.moid)
 
             if ok is None:
                 actual = "UNKNOWN"

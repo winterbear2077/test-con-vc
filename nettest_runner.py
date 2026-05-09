@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import sys
 from dataclasses import asdict
 from datetime import datetime, timezone
@@ -28,11 +29,13 @@ from nettest.policy import (
     summarize_expected,
 )
 
+logger = logging.getLogger(__name__)
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="vCenter ICMP policy test runner")
     parser.add_argument("--config", default="", help="Path to JSON config file")
-    parser.add_argument("--input", default="input.txt", help="Input file: txt/csv/xlsx")
+    parser.add_argument("--input", default="input.csv", help="Input file: txt/csv/xlsx")
     parser.add_argument("--output-dir", default="artifacts", help="Output directory")
     parser.add_argument("--retry-mode", choices=["all", "failed-only"], default="failed-only")
     parser.add_argument("--max-retries", type=int, default=1, help="Retry attempts after first run")
@@ -109,7 +112,7 @@ def _load_config(config_path: str) -> Dict:
 def _apply_config(args: argparse.Namespace, config: Dict) -> argparse.Namespace:
     # CLI always wins; config fills defaults.
     default_like = {
-        "input": "input.txt",
+        "input": "input.csv",
         "output_dir": "artifacts",
         "retry_mode": "failed-only",
         "max_retries": 1,
@@ -126,7 +129,6 @@ def _apply_config(args: argparse.Namespace, config: Dict) -> argparse.Namespace:
         "resource_pool": "",
         "ovf_path": "",
         "random_seed": None,
-
         "cleanup_on_failure": False,
         "execute_vcenter": False,
         # phased testing
@@ -140,7 +142,12 @@ def _apply_config(args: argparse.Namespace, config: Dict) -> argparse.Namespace:
     for key, default_val in default_like.items():
         current = getattr(args, key, default_val)
         if current == default_val and key in config:
-            setattr(args, key, config[key])
+            config_val = config[key]
+            # Don't let an empty string in config clobber a meaningful non-empty default
+            # (e.g. "input": "" should not override the default "input.txt").
+            if config_val == "" and default_val != "":
+                continue
+            setattr(args, key, config_val)
 
     return args
 
@@ -159,6 +166,11 @@ def write_json(path: Path, data: Dict) -> None:
 
 def run() -> int:
     args = parse_args()
+    logging.basicConfig(
+        level=logging.DEBUG if getattr(args, "verbose", False) else logging.INFO,
+        format="%(asctime)s %(levelname)-8s %(name)s %(message)s",
+        datefmt="%Y-%m-%dT%H:%M:%SZ",
+    )
     config = _load_config(args.config)
     args = _apply_config(args, config)
     run_id = args.run_id if getattr(args, "run_id", "") else now_run_id()
@@ -171,7 +183,7 @@ def run() -> int:
 
     input_path = Path(args.input)
     if not input_path.exists():
-        print(f"Input file not found: {input_path}", file=sys.stderr)
+        logger.error("Input file not found: %s", input_path)
         return 2
 
     try:
@@ -231,18 +243,19 @@ def run() -> int:
                 max_vms_per_phase=args.max_vms_per_phase,
                 enabled_phases=enabled_phases_list,
             )
-            print(f"Phased testing: {len(phases)} phase(s) generated", flush=True)
+            logger.info("Phased testing: %s phase(s) generated", len(phases))
 
             for phase in phases:
                 if not phase.cases:
                     continue
 
                 sep = "=" * 60
-                print(f"\n{sep}", flush=True)
-                print(f"Phase [{phase.phase_id}]: {phase.name}", flush=True)
-                print(f"  {phase.description}", flush=True)
-                print(f"  Cases: {len(phase.cases)}  VMs/subnet: {phase.vms_per_subnet}", flush=True)
-                print(sep, flush=True)
+                logger.info("")
+                logger.info(sep)
+                logger.info("Phase [%s]: %s", phase.phase_id, phase.name)
+                logger.info("  %s", phase.description)
+                logger.info("  Cases: %s  VMs/subnet: %s", len(phase.cases), phase.vms_per_subnet)
+                logger.info(sep)
 
                 # Collect subnets needed by this phase
                 phase_subnets = set()
@@ -255,7 +268,7 @@ def run() -> int:
                 phase_vm_instances: List = []
                 if args.probe_mode in ("in-guest", "in-guest-ping") and phase_rows:
                     total_vms = len(phase_rows) * phase.vms_per_subnet
-                    print(f"Provisioning {total_vms} VMs for phase...", flush=True)
+                    logger.info("Provisioning %s VMs for phase...", total_vms)
                     phase_vm_instances = provision_test_vms(
                         phase_rows, placements_dict, bindings_dict, args, run_id,
                         cases=phase.cases, gateway_by_subnet=gateway_by_subnet,
@@ -264,7 +277,7 @@ def run() -> int:
                     all_vm_instances.extend(phase_vm_instances)
                     created_registry["vms"].extend(vm.moid for vm in phase_vm_instances)
                     write_json(created_registry_path, created_registry)
-                    print(f"Provisioned {len(phase_vm_instances)} VMs", flush=True)
+                    logger.info("Provisioned %s VMs", len(phase_vm_instances))
 
                 phase_results = run_icmp_checks(
                     phase.cases,
@@ -281,7 +294,7 @@ def run() -> int:
 
                 ph_passed = sum(1 for r in phase_results if r.status == "pass")
                 ph_failed = sum(1 for r in phase_results if r.status != "pass")
-                print(f"Phase results: {ph_passed} passed, {ph_failed} failed", flush=True)
+                logger.info("Phase results: %s passed, %s failed", ph_passed, ph_failed)
                 phase_summaries.append({
                     "phase_id":    phase.phase_id,
                     "name":        phase.name,
@@ -291,9 +304,22 @@ def run() -> int:
                     "failed":      ph_failed,
                 })
 
-                # Always cleanup between phases to limit live VM count
+                if ph_failed:
+                    # Phase failed — apply retention policy then stop
+                    if phase_vm_instances:
+                        if args.cleanup_on_failure:
+                            logger.info("Phase failed — cleanup_on_failure set, cleaning up %s VMs...",
+                                        len(phase_vm_instances))
+                            cleanup_vms(phase_vm_instances, args, on_failure=True)
+                        else:
+                            logger.warning("Phase failed — retaining %s VMs for troubleshooting (use "
+                                           "--cleanup-on-failure to override).", len(phase_vm_instances))
+                    logger.warning("Stopping phased test run after phase [%s] failure.", phase.phase_id)
+                    break
+
+                # Phase passed — always cleanup between phases to limit live VM count
                 if phase_vm_instances:
-                    print(f"Cleaning up {len(phase_vm_instances)} phase VMs...", flush=True)
+                    logger.info("Cleaning up %s phase VMs...", len(phase_vm_instances))
                     cleanup_vms(phase_vm_instances, args, on_failure=False)
 
         # ── Non-phased (classic) testing ───────────────────────────────────────
@@ -302,7 +328,7 @@ def run() -> int:
             if args.probe_mode in ("in-guest", "in-guest-ping"):
                 vm_rows = [r for r in accepted if r.mode == "vm-provisioned"]
                 if vm_rows:
-                    print("Provisioning test VMs...", flush=True)
+                    logger.info("Provisioning test VMs...")
                     vm_instances = provision_test_vms(
                         vm_rows, placements_dict, bindings_dict, args, run_id,
                         cases=cases, gateway_by_subnet=gateway_by_subnet,
@@ -311,7 +337,7 @@ def run() -> int:
                     all_vm_instances.extend(vm_instances)
                     created_registry["vms"].extend(vm.moid for vm in vm_instances)
                     write_json(created_registry_path, created_registry)
-                    print(f"Provisioned {len(vm_instances)} test VMs", flush=True)
+                    logger.info("Provisioned %s test VMs", len(vm_instances))
 
             current_cases: List[TestCase] = list(cases)
             for attempt in range(args.max_retries + 1):
@@ -343,9 +369,9 @@ def run() -> int:
             success_classic = len(failed_results) == 0
 
             if vm_instances:
-                print("Cleaning up test VMs...", flush=True)
+                logger.info("Cleaning up test VMs...")
                 cleanup_result = cleanup_vms(vm_instances, args, on_failure=not success_classic)
-                print(f"VM cleanup completed: {cleanup_result}", flush=True)
+                logger.info("VM cleanup completed: %s", cleanup_result)
 
         failed_results = [r for r in all_results if r.status != "pass"]
         success = len(failed_results) == 0
@@ -454,7 +480,8 @@ def run() -> int:
         ]
         (output_dir / "summary.txt").write_text("\n".join(summary_lines) + "\n", encoding="utf-8")
 
-        print("\n".join(summary_lines))
+        for _line in summary_lines:
+            logger.info(_line)
         return 0 if success else 1
 
     except NotImplementedError as exc:
@@ -463,8 +490,8 @@ def run() -> int:
             "hint": "Run without --execute-vcenter to validate parsing/policy flow first.",
         }
         write_json(output_dir / "error.json", error_payload)
-        print(f"Execution blocked: {exc}", file=sys.stderr)
-        print(f"Error JSON: {output_dir / 'error.json'}", file=sys.stderr)
+        logger.error("Execution blocked: %s", exc)
+        logger.error("Error JSON: %s", output_dir / "error.json")
         return 3
     except RuntimeError as exc:
         error_payload = {
@@ -472,8 +499,8 @@ def run() -> int:
             "type": "RuntimeError",
         }
         write_json(output_dir / "error.json", error_payload)
-        print(f"Preflight failed: {exc}", file=sys.stderr)
-        print(f"Error JSON: {output_dir / 'error.json'}", file=sys.stderr)
+        logger.error("Preflight failed: %s", exc)
+        logger.error("Error JSON: %s", output_dir / "error.json")
         return 2
     except Exception as exc:  # noqa: BLE001
         error_payload = {
@@ -481,8 +508,8 @@ def run() -> int:
             "type": type(exc).__name__,
         }
         write_json(output_dir / "error.json", error_payload)
-        print(f"Unhandled error: {exc}", file=sys.stderr)
-        print(f"Error JSON: {output_dir / 'error.json'}", file=sys.stderr)
+        logger.error("Unhandled error: %s", exc)
+        logger.error("Error JSON: %s", output_dir / "error.json")
         return 4
 
 
