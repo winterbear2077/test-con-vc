@@ -36,3 +36,6 @@ ovf/*.nvram
 # cache
 .cache/
 .mypy_cache/
+
+# tls
+*.pem
