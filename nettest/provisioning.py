@@ -378,7 +378,7 @@ def provision_test_vms(
     except ImportError as exc:
         raise RuntimeError("pyvmomi is required for --execute-vcenter. Install: pip install pyvmomi") from exc
 
-    instances: List[VMInstance] = []
+    instances = []
     unique_networks: Dict[tuple, Any] = {}
     for row in test_rows:
         network_key = (row.datacenter, row.cluster, row.vlan, row.subnet)

@@ -1,0 +1,52 @@
+<div class="section-header" style="justify-content:space-between">
+  <span><clr-icon shape="history" size="20"></clr-icon> History</span>
+  <button class="btn btn-outline btn-sm" (click)="load()">
+    <clr-icon shape="refresh" size="14"></clr-icon> Refresh
+  </button>
+</div>
+
+<clr-alert *ngIf="error" [clrAlertType]="'danger'" [clrAlertClosable]="true" (clrAlertClosedChange)="error=''">
+  <clr-alert-item><span class="alert-text">{{ error }}</span></clr-alert-item>
+</clr-alert>
+
+<div class="card">
+  <div class="card-block" style="padding:0">
+    <table class="table table-compact" style="margin:0">
+      <thead>
+        <tr>
+          <th>Run ID</th><th>Status</th><th>Probe Mode</th>
+          <th>Passed</th><th>Failed</th><th>Total</th><th style="width:80px"></th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr *ngIf="loading">
+          <td colspan="7" style="text-align:center;padding:1rem">
+            <clr-spinner clrInline></clr-spinner> Loading...
+          </td>
+        </tr>
+        <tr *ngIf="!loading && !runs.length">
+          <td colspan="7" style="text-align:center;padding:1rem" class="text-muted p6">No runs yet.</td>
+        </tr>
+        <tr *ngFor="let r of runs">
+          <td><code class="text-muted" style="font-size:.8rem">{{ r.run_id }}</code></td>
+          <td><span class="label" [ngClass]="statusClass(r.status)">{{ r.status }}</span></td>
+          <td class="p6 text-muted">{{ r.probe_mode }}</td>
+          <td class="text-success">{{ r.passed }}</td>
+          <td [class.text-danger]="r.failed">{{ r.failed || '&mdash;' }}</td>
+          <td class="text-muted">{{ r.total }}</td>
+          <td>
+            <span class="p7 text-muted" *ngIf="cleanMsg[r.run_id]" style="margin-right:6px;font-size:.7rem">{{ cleanMsg[r.run_id] }}</span>
+            <button class="btn btn-icon btn-sm btn-link" (click)="cleanup(r.run_id)" [disabled]="cleaningId === r.run_id || deletingId === r.run_id" title="Delete test VMs">
+              <clr-spinner *ngIf="cleaningId===r.run_id" clrInline></clr-spinner>
+              <clr-icon *ngIf="cleaningId!==r.run_id" shape="vm" style="color:#c92100"></clr-icon>
+            </button>
+            <button *ngIf="devMode" class="btn btn-icon btn-sm btn-link" (click)="deleteRecord(r.run_id)" [disabled]="deletingId === r.run_id || cleaningId === r.run_id" title="Remove from history">
+              <clr-spinner *ngIf="deletingId===r.run_id" clrInline></clr-spinner>
+              <clr-icon *ngIf="deletingId!==r.run_id" shape="trash" style="color:#c92100"></clr-icon>
+            </button>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</div>

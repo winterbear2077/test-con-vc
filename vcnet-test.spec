@@ -50,6 +50,16 @@ hiddenimports = (
         "watchfiles",
         "multipart",
         "python_multipart",
+        "cryptography",
+        "cryptography.hazmat.primitives",
+        "cryptography.hazmat.primitives.asymmetric",
+        "cryptography.hazmat.primitives.asymmetric.rsa",
+        "cryptography.hazmat.primitives.hashes",
+        "cryptography.hazmat.primitives.serialization",
+        "cryptography.x509",
+        "cryptography.x509.oid",
+        "web_app",
+        "nettest_runner",
     ]
 )
 

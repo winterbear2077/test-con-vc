@@ -467,7 +467,7 @@ def run() -> int:
             "FinalStatus": "PASS" if success else "FAIL",
         }
 
-        write_json(output_dir / "result.json", result_payload)
+        print(f"__RESULT__:{json.dumps(result_payload, ensure_ascii=True)}", flush=True)
         summary_lines = [
             f"Run ID: {run_id}",
             f"Input: {input_path}",
@@ -476,9 +476,7 @@ def run() -> int:
             f"Test cases: {len(cases)}",
             f"Phased testing: {'yes (' + str(len(phase_summaries)) + ' phases)' if args.phased_testing else 'no'}",
             f"Final status: {result_payload['FinalStatus']}",
-            f"Result JSON: {output_dir / 'result.json'}",
         ]
-        (output_dir / "summary.txt").write_text("\n".join(summary_lines) + "\n", encoding="utf-8")
 
         for _line in summary_lines:
             logger.info(_line)
@@ -489,27 +487,24 @@ def run() -> int:
             "error": str(exc),
             "hint": "Run without --execute-vcenter to validate parsing/policy flow first.",
         }
-        write_json(output_dir / "error.json", error_payload)
+        print(f"__ERROR__:{json.dumps(error_payload, ensure_ascii=True)}", flush=True)
         logger.error("Execution blocked: %s", exc)
-        logger.error("Error JSON: %s", output_dir / "error.json")
         return 3
     except RuntimeError as exc:
         error_payload = {
             "error": str(exc),
             "type": "RuntimeError",
         }
-        write_json(output_dir / "error.json", error_payload)
+        print(f"__ERROR__:{json.dumps(error_payload, ensure_ascii=True)}", flush=True)
         logger.error("Preflight failed: %s", exc)
-        logger.error("Error JSON: %s", output_dir / "error.json")
         return 2
     except Exception as exc:  # noqa: BLE001
         error_payload = {
             "error": str(exc),
             "type": type(exc).__name__,
         }
-        write_json(output_dir / "error.json", error_payload)
+        print(f"__ERROR__:{json.dumps(error_payload, ensure_ascii=True)}", flush=True)
         logger.error("Unhandled error: %s", exc)
-        logger.error("Error JSON: %s", output_dir / "error.json")
         return 4
 
 

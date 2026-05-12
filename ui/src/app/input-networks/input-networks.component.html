@@ -1,0 +1,86 @@
+<div class="section-header" style="justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:4px">
+  <span><clr-icon shape="table" size="20"></clr-icon> Input Networks</span>
+  <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px">
+    <div style="display:flex;gap:8px;align-items:center">
+      <button class="btn btn-outline btn-sm" (click)="fileInput.click()" [disabled]="importing">
+        <clr-icon shape="folder" size="14"></clr-icon> {{ importing ? 'Parsing…' : 'Import CSV / XLSX' }}
+      </button>
+      <input #fileInput type="file" accept=".csv,.txt,.xlsx" style="display:none" (change)="onImportFile($event)" />
+      <button class="btn btn-outline btn-sm" (click)="addRow()">
+        <clr-icon shape="plus-circle" size="14"></clr-icon> Add Row
+      </button>
+      <button class="btn btn-outline-info btn-sm" (click)="syncInventory()" [disabled]="syncing">
+        <clr-icon shape="download-cloud" size="14" [class.spin]="syncing"></clr-icon>
+        {{ syncing ? 'Syncing...' : 'Sync from vCenter' }}
+      </button>
+      <button class="btn btn-primary btn-sm" (click)="save()">
+        <clr-icon shape="floppy" size="14"></clr-icon> Save
+      </button>
+    </div>
+    <div style="min-height:1.2em;font-size:0.75rem;text-align:right"
+         [class.text-success]="msg.startsWith('\u2713')"
+         [class.text-danger]="msg.startsWith('\u2717')">{{ msg }}</div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-block" style="padding:0">
+    <div style="overflow-x:auto">
+      <table class="table table-compact" style="margin-bottom:0">
+        <thead>
+          <tr>
+            <th>Datacenter</th><th>Cluster</th><th>VLAN / Portgroup</th>
+            <th>Subnet</th><th>Gateway</th><th>VRF</th><th style="width:36px"></th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr *ngFor="let row of rows; let i = index"
+              [style.background]="row._mngt ? '#f5f5f5' : ''">
+            <td>
+              <select *ngIf="inventory" [(ngModel)]="row.datacenter" class="clr-select" style="min-width:110px">
+                <option value="">— DC —</option>
+                <option *ngFor="let dc of dcOptions()" [value]="dc">{{ dc }}</option>
+              </select>
+              <input *ngIf="!inventory" type="text" class="clr-input" [(ngModel)]="row.datacenter" placeholder="datacenter" />
+            </td>
+            <td>
+              <select *ngIf="inventory" [(ngModel)]="row.cluster" (ngModelChange)="onClusterChange(row)" class="clr-select" style="min-width:110px">
+                <option value="">— Cluster —</option>
+                <option *ngFor="let c of clusterOptions(row.datacenter || '')" [value]="c">{{ c }}</option>
+              </select>
+              <input *ngIf="!inventory" type="text" class="clr-input" [(ngModel)]="row.cluster" (ngModelChange)="onClusterChange(row)" placeholder="cluster" />
+            </td>
+            <td>
+              <select *ngIf="inventory && pgOptions(row.datacenter || '', row.cluster || '').length" [(ngModel)]="row.vlan" class="clr-select" style="min-width:180px">
+                <option value="">— Portgroup —</option>
+                <option *ngFor="let pg of pgOptions(row.datacenter || '', row.cluster || '')" [value]="pg.value">{{ pg.label }}</option>
+              </select>
+              <input *ngIf="!inventory || !pgOptions(row.datacenter || '', row.cluster || '').length" type="text" class="clr-input" [(ngModel)]="row.vlan" placeholder="vlan / portgroup" />
+            </td>
+            <td><input type="text" class="clr-input" [(ngModel)]="row.subnet" placeholder="10.0.0.0/24" /></td>
+            <td><input type="text" class="clr-input" [(ngModel)]="row.gw" placeholder="10.0.0.1" /></td>
+            <td><input type="text" class="clr-input" [(ngModel)]="row.vrf" placeholder="VRF-A" /></td>
+            <td>
+              <button class="btn btn-icon btn-sm btn-link" (click)="deleteRow(i)">
+                <clr-icon shape="times-circle" style="color:#c92100"></clr-icon>
+              </button>
+            </td>
+          </tr>
+          <tr *ngIf="!rows.length">
+            <td colspan="7" style="text-align:center;padding:1rem" class="text-muted p6">
+              No rows. Click "Import CSV / XLSX" or "Add Row" to get started.
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<clr-alert [clrAlertType]="'warning'" [clrAlertClosable]="false" style="margin-top:.75rem">
+  <clr-alert-item>
+    <span class="alert-text p6">
+      Rows where <strong>Cluster = MNGT</strong> are treated as ESXi management networks — no test VM will be deployed.
+    </span>
+  </clr-alert-item>
+</clr-alert>

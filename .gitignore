@@ -27,3 +27,12 @@ nettest.config.json
 # Large binary assets – distribute via GitHub Releases or external storage
 ovf/*.vmdk
 ovf/*.nvram
+
+# database files
+*.db
+*.sqlite
+*.sqlite3
+
+# cache
+.cache/
+.mypy_cache/

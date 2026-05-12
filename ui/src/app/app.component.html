@@ -1,0 +1,49 @@
+<clr-main-container>
+  <clr-header class="header-6">
+    <div class="branding">
+      <a class="nav-link">
+        <clr-icon shape="network-globe" class="is-inverse" size="28"></clr-icon>
+        <span class="title">vCenter Network Test</span>
+      </a>
+    </div>
+  </clr-header>
+
+  <div class="content-container">
+    <nav class="sidenav">
+      <section class="sidenav-content">
+        <a class="nav-link" [class.active]="activeTab==='config'" (click)="navTo('config')">
+          <clr-icon shape="cog" size="16"></clr-icon> Config
+        </a>
+        <a class="nav-link" [class.active]="activeTab==='input'" (click)="navTo('input')">
+          <clr-icon shape="table" size="16"></clr-icon> Input Networks
+        </a>
+        <a class="nav-link" [class.active]="activeTab==='rules'" (click)="navTo('rules')">
+          <clr-icon shape="shield-check" size="16"></clr-icon> VRF Rules
+        </a>
+        <a class="nav-link" [class.active]="activeTab==='run'" (click)="navTo('run')">
+          <clr-icon shape="play" size="16"></clr-icon> Run Test
+        </a>
+        <a class="nav-link" [class.active]="activeTab==='history'" (click)="navTo('history')">
+          <clr-icon shape="history" size="16"></clr-icon> History
+        </a>
+      </section>
+    </nav>
+    <div class="content-area">
+      @if (activeTab==='config') {
+        <app-config (navigate)="navTo($event)"></app-config>
+      }
+      @if (activeTab==='input') {
+        <app-input-networks></app-input-networks>
+      }
+      @if (activeTab==='rules') {
+        <app-vrf-rules></app-vrf-rules>
+      }
+      @if (activeTab==='run') {
+        <app-run-test></app-run-test>
+      }
+      @if (activeTab==='history') {
+        <app-history (navigate)="navTo($event)"></app-history>
+      }
+    </div>
+  </div>
+</clr-main-container>

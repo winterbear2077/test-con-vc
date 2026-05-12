@@ -184,7 +184,7 @@ def run_icmp_checks(
             else:
                 if dst_gw not in ping_cache:
                     ping_cache[dst_gw] = _ping_once(dst_gw, timeout_sec)
-                ok = ping_cache[dst_gw]
+                ok: Optional[bool] = ping_cache[dst_gw]
                 actual = "PASS" if ok else "FAIL"
                 status = "pass" if actual == case.expected else "fail"
                 reason = "controller-icmp-to-dst-gw"
@@ -260,7 +260,7 @@ def run_icmp_checks(
 
         use_guest_ops = vcenter_si is not None
 
-        results: List[TestResult] = []
+        results = []
         for case in cases:
             src_vm_idx  = getattr(case, "src_vm_index", 0)
             dst_vm_idx  = getattr(case, "dst_vm_index", 0)
@@ -315,7 +315,7 @@ def run_icmp_checks(
                     ))
                     continue
 
-            ok: Optional[bool] = None
+            ok = None
             probe_reason = "unknown"
 
             # Primary: guestinfo results written by netprobe.start inside the VM.

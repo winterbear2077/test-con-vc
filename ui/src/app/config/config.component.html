@@ -1,0 +1,128 @@
+<div class="section-header">
+  <clr-icon shape="cog" size="20"></clr-icon> Configuration
+</div>
+
+<div class="clr-row" style="align-items:stretch">
+  <div *ngIf="!plugin.isPlugin" class="clr-col-lg-5 clr-col-12" style="display:flex;flex-direction:column">
+    <div class="card" style="flex:1;display:flex;flex-direction:column">
+      <div class="card-header">vCenter Connection</div>
+      <div class="card-block" style="flex:1">
+        <div class="card-text">
+          <clr-input-container>
+            <label>Host / IP</label>
+            <input clrInput [(ngModel)]="cfg.vcenter_host" placeholder="172.20.41.21" />
+          </clr-input-container>
+          <clr-input-container>
+            <label>Username</label>
+            <input clrInput [(ngModel)]="cfg.vcenter_user" placeholder="Administrator@vsphere.local" />
+          </clr-input-container>
+          <clr-password-container>
+            <label>Password</label>
+            <input clrPassword [(ngModel)]="cfg.vcenter_password" placeholder="&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;" />
+          </clr-password-container>
+        </div>
+      </div>
+      <div class="card-footer" style="flex-direction:column;align-items:flex-end;gap:4px">
+        <div>
+          <button class="btn btn-primary btn-sm" (click)="save()">
+            <clr-icon shape="floppy" size="14"></clr-icon> Save
+          </button>
+        </div>
+        <div style="min-height:1.2em;font-size:0.75rem;text-align:right"
+             [class.text-success]="saveMsg.startsWith('\u2713')"
+             [class.text-danger]="saveMsg.startsWith('\u2717')">{{ saveMsg }}</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="clr-col-lg-7 clr-col-12" style="display:flex;flex-direction:column">
+    <div class="card" style="flex:1">
+      <div class="card-header">Test Settings</div>
+      <div class="card-block">
+        <div class="card-text">
+          <div class="clr-row">
+            <div class="clr-col-sm-6">
+              <clr-input-container>
+                <label>OVF Template Path</label>
+                <input clrInput [(ngModel)]="cfg.ovf_path" placeholder="./ovf/Alpine-nettest.ovf" />
+              </clr-input-container>
+              <label class="btn btn-sm btn-outline" style="margin-top:4px">
+                <clr-icon shape="folder" size="14"></clr-icon> Browse OVF bundle
+                <input type="file" multiple style="display:none" (change)="onOvfFiles($event)" />
+              </label>
+            </div>
+            <div class="clr-col-sm-6">
+              <clr-input-container>
+                <label>Resource Pool</label>
+                <input clrInput [(ngModel)]="cfg.resource_pool" placeholder="(default)" />
+              </clr-input-container>
+            </div>
+            <div class="clr-col-sm-6">
+              <clr-input-container>
+                <label>VM Prefix</label>
+                <input clrInput [(ngModel)]="cfg.vm_prefix" placeholder="nettest" />
+              </clr-input-container>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+
+<div class="card" *ngIf="!plugin.isPlugin">
+  <div class="card-header" style="display:flex;align-items:center;gap:8px">
+    vCenter Plugin Registration
+    <span *ngIf="pluginStatus?.registered" class="label label-success" style="margin-left:8px">Registered</span>
+    <span *ngIf="pluginStatus && !pluginStatus.registered" class="label" style="margin-left:8px">Not registered</span>
+  </div>
+  <div class="card-block">
+    <div class="card-text">
+      <p class="p6 text-muted" style="margin-bottom:.75rem">
+        Register this app as a vSphere Client sidebar plugin. Requires HTTPS (<code>--tls</code>).
+      </p>
+      <div class="clr-row clr-align-items-end">
+        <div class="clr-col-sm-5">
+          <clr-input-container>
+            <label>Plugin URL</label>
+            <input clrInput [(ngModel)]="pluginUrl" placeholder="https://192.168.1.10:8443" (blur)="fetchThumbprint()" />
+            <clr-control-helper *ngIf="thumbprintLoading">Fetching thumbprint…</clr-control-helper>
+          </clr-input-container>
+        </div>
+        <div class="clr-col-sm-3">
+          <clr-input-container>
+            <label>Extension Key</label>
+            <input clrInput [(ngModel)]="pluginKey" />
+          </clr-input-container>
+        </div>
+        <div class="clr-col-sm-8">
+          <clr-input-container>
+            <label>SSL Thumbprint (SHA-1) — auto-fetched</label>
+            <input clrInput [(ngModel)]="pluginThumbprint" [attr.readonly]="true" placeholder="AA:BB:CC:… (auto-fetched)" style="font-family:monospace" />
+          </clr-input-container>
+        </div>
+        <div class="clr-col-auto" style="padding-bottom:8px;display:flex;gap:6px;flex-wrap:wrap">
+          <button class="btn btn-success btn-sm" (click)="registerPlugin()" [disabled]="pluginLoading">
+            <clr-icon shape="plugin" size="14"></clr-icon> Register
+          </button>
+          <button class="btn btn-outline-danger btn-sm" (click)="unregisterPlugin()" [disabled]="pluginLoading">
+            <clr-icon shape="times-circle" size="14"></clr-icon> Unregister
+          </button>
+          <button class="btn btn-outline btn-sm" (click)="checkPluginStatus()">
+            <clr-icon shape="refresh" size="14"></clr-icon> Check
+          </button>
+        </div>
+      </div>
+      <div style="min-height:1.2em;font-size:0.75rem;text-align:right;margin-top:4px"
+           [class.text-success]="pluginMsg.startsWith('\u2713')"
+           [class.text-danger]="pluginMsg.startsWith('\u2717')">{{ pluginMsg }}</div>
+      <div *ngIf="pluginStatus?.registered" class="p6 text-muted mt-1">
+        Key: <code>{{ pluginStatus!.key }}</code> &nbsp;
+        Version: {{ pluginStatus!.version }} &nbsp;
+        URL: <code>{{ pluginStatus!.url }}</code>
+      </div>
+    </div>
+  </div>
+</div>

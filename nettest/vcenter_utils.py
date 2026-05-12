@@ -16,6 +16,29 @@ def connect_vcenter(args: Any) -> Any:
     )
 
 
+def connect_vcenter_with_session(host: str, soap_session_id: str) -> Any:
+    """Connect to vCenter by reusing an existing SOAP session cookie.
+
+    The vSphere HTML5 Client passes the user's vmware_soap_session when
+    loading a remote plugin.  This avoids re-entering credentials.
+    """
+    try:
+        from pyVim import connect as _connect
+        from pyVmomi import vim
+    except ImportError as exc:
+        raise RuntimeError("pyvmomi is required. Install: pip install pyvmomi") from exc
+
+    ssl_ctx = ssl._create_unverified_context()
+    stub = _connect.SoapStubAdapter(host=host, port=443, sslContext=ssl_ctx)
+    si = vim.ServiceInstance("ServiceInstance", stub)
+    # Inject the existing session cookie — pyVmomi honours this on subsequent calls
+    stub.cookie = f'vmware_soap_session="{soap_session_id}"; Path=/; Secure; HttpOnly;'
+    # Force a call to validate the session; raises if the cookie is stale/invalid
+    _ = si.content  # noqa: F841
+    atexit.register(_connect.Disconnect, si)
+    return si
+
+
 def connect_vcenter_direct(host: str, user: str, pwd: str) -> Any:
     """Create and return a vCenter service instance using explicit credentials."""
     try:

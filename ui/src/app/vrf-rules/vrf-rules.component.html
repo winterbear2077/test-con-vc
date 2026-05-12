@@ -1,0 +1,91 @@
+<div class="section-header">
+  <clr-icon shape="shield-check" size="20"></clr-icon> VRF Rules
+</div>
+
+<p class="p6 text-muted" style="margin-bottom:1rem">
+  Define cross-VRF connectivity expectations. <strong>ALLOW</strong> means ICMP is expected to pass;
+  <strong>DENY</strong> means it is expected to be blocked. These rules override the default policy
+  (same VRF = PASS, cross VRF = FAIL).
+</p>
+
+<div class="card" style="margin-bottom:1rem">
+  <div class="card-header" style="display:flex;align-items:center;gap:8px">
+    <span>Rules</span>
+    <button class="btn btn-outline btn-sm" (click)="addRule()">
+      <clr-icon shape="plus" size="14"></clr-icon> Add Rule
+    </button>
+    <button class="btn btn-outline-danger btn-sm" style="margin-left:auto" (click)="clearAll()">
+      <clr-icon shape="trash" size="14"></clr-icon> Clear All
+    </button>
+  </div>
+  <div class="card-block">
+    <div class="card-text">
+      <div *ngIf="!rules.length" class="p6 text-muted" style="font-style:italic">
+        No rules defined — default policy applies (same VRF = PASS, cross VRF = FAIL).
+      </div>
+      <div *ngIf="rules.length" class="clr-row p6 text-muted" style="font-weight:600;margin-bottom:4px">
+        <div class="clr-col" style="max-width:160px">From VRF</div>
+        <div class="clr-col" style="max-width:160px">To VRF</div>
+        <div class="clr-col" style="max-width:110px;margin-left:16px">Action</div>
+        <div class="clr-col">Comment (optional)</div>
+      </div>
+      <div *ngFor="let rule of rules" class="clr-row clr-align-items-center" style="margin-bottom:6px">
+        <div class="clr-col" style="max-width:160px">
+          <select *ngIf="vrfOptions.length" [(ngModel)]="rule.fromVrf" class="clr-select">
+            <option value="">— VRF —</option>
+            <option *ngFor="let v of vrfOptions" [value]="v">{{ v }}</option>
+          </select>
+          <input *ngIf="!vrfOptions.length" type="text" class="clr-input" [(ngModel)]="rule.fromVrf" placeholder="From VRF" />
+        </div>
+        <div class="clr-col" style="max-width:160px">
+          <select *ngIf="vrfOptions.length" [(ngModel)]="rule.toVrf" class="clr-select">
+            <option value="">— VRF —</option>
+            <option *ngFor="let v of vrfOptions" [value]="v">{{ v }}</option>
+          </select>
+          <input *ngIf="!vrfOptions.length" type="text" class="clr-input" [(ngModel)]="rule.toVrf" placeholder="To VRF" />
+        </div>
+        <div class="clr-col" style="max-width:110px;margin-left:16px">
+          <select [(ngModel)]="rule.action" class="clr-select">
+            <option value="PASS">ALLOW</option>
+            <option value="FAIL">DENY</option>
+          </select>
+        </div>
+        <div class="clr-col">
+          <input type="text" class="clr-input" [(ngModel)]="rule.comment" placeholder="Optional comment" style="width:100%" />
+        </div>
+        <div class="clr-col-auto">
+          <button class="btn btn-icon btn-sm btn-link" (click)="removeRule(rule.id)">
+            <clr-icon shape="trash" style="color:#c92100"></clr-icon>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="card-footer" style="flex-direction:column;align-items:flex-end;gap:4px">
+    <div>
+      <button class="btn btn-primary btn-sm" (click)="save()">
+        <clr-icon shape="floppy" size="14"></clr-icon> Save Rules
+      </button>
+    </div>
+    <div style="min-height:1.2em;font-size:0.75rem;text-align:right"
+         [class.text-success]="saveMsg.startsWith('✓')"
+         [class.text-danger]="saveMsg.startsWith('✗')">{{ saveMsg }}</div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-header">Policy Preview</div>
+  <div class="card-block">
+    <div class="card-text">
+      <div *ngIf="!previewLines.length" class="p6 text-muted" style="font-style:italic">
+        Add rules above to see the policy summary.
+      </div>
+      <div *ngFor="let line of previewLines" style="margin-bottom:4px">
+        <span class="label" [class.label-success]="line.allow" [class.label-danger]="!line.allow">
+          {{ line.allow ? 'ALLOW' : 'DENY' }}
+        </span>
+        &nbsp;<code>{{ line.from }}</code> &#8596; <code>{{ line.to }}</code>
+      </div>
+    </div>
+  </div>
+</div>
