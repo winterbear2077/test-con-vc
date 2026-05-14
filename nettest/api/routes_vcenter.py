@@ -10,8 +10,8 @@ from fastapi import APIRouter, HTTPException, Header
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
-from nettest.vcenter_utils import connect_vcenter_direct, connect_vcenter_with_session, disconnect_vcenter
-from nettest.api.deps import CONFIG_FILE, _read_config, _write_config
+from nettest.vcenter_utils import connect_vcenter_auto, disconnect_vcenter
+from nettest.api.deps import _read_config, _write_config
 
 router = APIRouter()
 
@@ -37,14 +37,13 @@ def api_vcenter_inventory(x_vcenter_session: str | None = Header(default=None)):
 
     try:
         if x_vcenter_session:
-            # Plugin mode: reuse the vSphere Client's existing SOAP session
-            si = connect_vcenter_with_session(host=host, soap_session_id=x_vcenter_session)
+            si = connect_vcenter_auto(host=host, session_id=x_vcenter_session)
         else:
             user = str(cfg.get("vcenter_user", "")).strip()
             pwd  = str(cfg.get("vcenter_password", "")).strip()
             if not user:
                 raise HTTPException(status_code=400, detail="vcenter_user must be set in Config first")
-            si = connect_vcenter_direct(host=host, user=user, pwd=pwd)
+            si = connect_vcenter_auto(host=host, user=user, pwd=pwd)
     except HTTPException:
         raise
     except Exception as exc:
@@ -232,17 +231,20 @@ class PluginRegisterIn(BaseModel):
 
 
 @router.post("/api/vcenter/plugin/register")
-def api_plugin_register(body: PluginRegisterIn):
+def api_plugin_register(body: PluginRegisterIn, x_vcenter_session: str = Header(default="")):
     cfg = _read_config()
     vcenter_host     = cfg.get("vcenter_host", "")
     vcenter_user     = cfg.get("vcenter_user", "")
     vcenter_password = cfg.get("vcenter_password", "")
-    if not vcenter_host or not vcenter_user or not vcenter_password:
+    session_id = x_vcenter_session.strip()
+    if not vcenter_host:
+        raise HTTPException(400, "vCenter host not configured")
+    if not session_id and (not vcenter_user or not vcenter_password):
         raise HTTPException(400, "vCenter credentials not configured")
 
     try:
         from pyVmomi import vim
-        si = connect_vcenter_direct(host=vcenter_host, user=vcenter_user, pwd=vcenter_password)
+        si = connect_vcenter_auto(host=vcenter_host, user=vcenter_user, pwd=vcenter_password, session_id=session_id)
     except Exception as exc:
         raise HTTPException(502, f"vCenter connect failed: {exc}")
 
@@ -288,16 +290,19 @@ def api_plugin_thumbprint(url: str):
 
 
 @router.post("/api/vcenter/plugin/unregister")
-def api_plugin_unregister(body: PluginKeyIn):
+def api_plugin_unregister(body: PluginKeyIn, x_vcenter_session: str = Header(default="")):
     cfg = _read_config()
     vcenter_host     = cfg.get("vcenter_host", "")
     vcenter_user     = cfg.get("vcenter_user", "")
     vcenter_password = cfg.get("vcenter_password", "")
-    if not vcenter_host or not vcenter_user or not vcenter_password:
+    session_id = x_vcenter_session.strip()
+    if not vcenter_host:
+        raise HTTPException(400, "vCenter host not configured")
+    if not session_id and (not vcenter_user or not vcenter_password):
         raise HTTPException(400, "vCenter credentials not configured")
 
     try:
-        si = connect_vcenter_direct(host=vcenter_host, user=vcenter_user, pwd=vcenter_password)
+        si = connect_vcenter_auto(host=vcenter_host, user=vcenter_user, pwd=vcenter_password, session_id=session_id)
     except Exception as exc:
         raise HTTPException(502, f"vCenter connect failed: {exc}")
 
@@ -315,16 +320,19 @@ def api_plugin_unregister(body: PluginKeyIn):
 
 
 @router.get("/api/vcenter/plugin/status")
-def api_plugin_status(plugin_key: str = _PLUGIN_KEY):
+def api_plugin_status(plugin_key: str = _PLUGIN_KEY, x_vcenter_session: str = Header(default="")):
     cfg = _read_config()
     vcenter_host     = cfg.get("vcenter_host", "")
     vcenter_user     = cfg.get("vcenter_user", "")
     vcenter_password = cfg.get("vcenter_password", "")
-    if not vcenter_host or not vcenter_user or not vcenter_password:
+    session_id = x_vcenter_session.strip()
+    if not vcenter_host:
+        return {"registered": False, "reason": "vcenter-not-configured"}
+    if not session_id and (not vcenter_user or not vcenter_password):
         return {"registered": False, "reason": "vcenter-not-configured"}
 
     try:
-        si = connect_vcenter_direct(host=vcenter_host, user=vcenter_user, pwd=vcenter_password)
+        si = connect_vcenter_auto(host=vcenter_host, user=vcenter_user, pwd=vcenter_password, session_id=session_id)
     except Exception as exc:
         return {"registered": False, "reason": str(exc)}
 

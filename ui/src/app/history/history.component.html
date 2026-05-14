@@ -14,7 +14,7 @@
     <table class="table table-compact" style="margin:0">
       <thead>
         <tr>
-          <th>Run ID</th><th>Status</th><th>Probe Mode</th>
+          <th>Time (UTC)</th><th>Status</th><th>Probe Mode</th>
           <th>Passed</th><th>Failed</th><th>Total</th><th style="width:80px"></th>
         </tr>
       </thead>
@@ -27,14 +27,17 @@
         <tr *ngIf="!loading && !runs.length">
           <td colspan="7" style="text-align:center;padding:1rem" class="text-muted p6">No runs yet.</td>
         </tr>
-        <tr *ngFor="let r of runs">
-          <td><code class="text-muted" style="font-size:.8rem">{{ r.run_id }}</code></td>
+        <tr *ngFor="let r of pageRuns"
+            (click)="selectRun(r)"
+            [class.history-row-selected]="selectedRunId === r.run_id"
+            class="history-row">
+          <td><code class="text-muted" style="font-size:.8rem">{{ formatTime(r.run_id) }}</code></td>
           <td><span class="label" [ngClass]="statusClass(r.status)">{{ r.status }}</span></td>
           <td class="p6 text-muted">{{ r.probe_mode }}</td>
           <td class="text-success">{{ r.passed }}</td>
           <td [class.text-danger]="r.failed">{{ r.failed || '&mdash;' }}</td>
           <td class="text-muted">{{ r.total }}</td>
-          <td>
+          <td (click)="$event.stopPropagation()">
             <span class="p7 text-muted" *ngIf="cleanMsg[r.run_id]" style="margin-right:6px;font-size:.7rem">{{ cleanMsg[r.run_id] }}</span>
             <button class="btn btn-icon btn-sm btn-link" (click)="cleanup(r.run_id)" [disabled]="cleaningId === r.run_id || deletingId === r.run_id" title="Delete test VMs">
               <clr-spinner *ngIf="cleaningId===r.run_id" clrInline></clr-spinner>
@@ -50,3 +53,32 @@
     </table>
   </div>
 </div>
+
+<!-- Pagination bar -->
+<div *ngIf="totalPages > 1" class="pagination-bar">
+  <button class="pag-arrow" [disabled]="currentPage === 1" (click)="goPage(currentPage - 1)">&#10094;</button>
+  <span class="pag-info">{{ currentPage }} / {{ totalPages }}</span>
+  <button class="pag-arrow" [disabled]="currentPage === totalPages" (click)="goPage(currentPage + 1)">&#10095;</button>
+  <span class="pag-info" style="margin-left:8px">{{ runs.length }} total</span>
+</div>
+
+<!-- Slide-over drawer for result detail -->
+<div *ngIf="drawerOpen" class="result-overlay" (click)="closeDrawer()"></div>
+<div class="result-drawer" [class.result-drawer-open]="drawerOpen">
+  <div class="result-drawer-header">
+    <span><clr-icon shape="bar-chart" size="16"></clr-icon> Result — {{ formatTime(selectedRunId || '') }}</span>
+    <button class="btn btn-icon btn-sm btn-link" (click)="closeDrawer()" style="color:#fff">
+      <clr-icon shape="times" size="16"></clr-icon>
+    </button>
+  </div>
+  <div class="result-drawer-body">
+    <div *ngIf="loadingResult" style="text-align:center;padding:2rem">
+      <clr-spinner></clr-spinner><div style="margin-top:.5rem" class="text-muted p6">Loading result...</div>
+    </div>
+    <div *ngIf="!loadingResult && !selectedResult" class="text-muted p6" style="padding:1rem">
+      No result data available for this run.
+    </div>
+    <app-result-panel [result]="selectedResult"></app-result-panel>
+  </div>
+</div>
+

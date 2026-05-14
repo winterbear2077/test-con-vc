@@ -3,20 +3,23 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import queue as _queue
-import subprocess
-import sys
 import threading
+import traceback
 from datetime import datetime, timezone
 from typing import List
 
-from fastapi import APIRouter, HTTPException
+logger = logging.getLogger(__name__)
+
+from fastapi import APIRouter, HTTPException, Header
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 import nettest.db as _db
-from nettest.vcenter_utils import connect_vcenter_direct, disconnect_vcenter, get_all_vms_by_moid, delete_vm
-from nettest.api.deps import WORKSPACE, ARTIFACTS, CONFIG_FILE, _runs, _read_config
+from nettest.runner import RunConfig, execute_run
+from nettest.vcenter_utils import connect_vcenter_auto, disconnect_vcenter, get_all_vms_by_moid, delete_vm
+from nettest.api.deps import WORKSPACE, ARTIFACTS, _runs, _read_config
 
 router = APIRouter()
 
@@ -35,69 +38,57 @@ class RunIn(BaseModel):
 
 
 @router.post("/api/run")
-def api_start_run(req: RunIn):
+def api_start_run(req: RunIn, x_vcenter_session: str = Header(default="")):
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     q: _queue.Queue = _queue.Queue()
     _runs[run_id] = {"queue": q, "returncode": None}
     _db.insert_run(run_id, run_id)
 
-    if getattr(sys, "frozen", False):
-        cmd = [sys.executable, "--_runner", "--config", str(CONFIG_FILE), "--run-id", run_id]
-    else:
-        cmd = [sys.executable, "-u", "nettest_runner.py", "--config", str(CONFIG_FILE), "--run-id", run_id]
-
-    # Pass vCenter credentials via CLI so they never need to live in the JSON file
-    cfg = _read_config()
-    vc_host = str(cfg.get("vcenter_host", "")).strip()
-    vc_user = str(cfg.get("vcenter_user", "")).strip()
-    vc_pass = str(cfg.get("vcenter_password", "")).strip()
-    if vc_host:
-        cmd += ["--vcenter-host", vc_host]
-    if vc_user:
-        cmd += ["--vcenter-user", vc_user]
-    if vc_pass:
-        cmd += ["--vcenter-password", vc_pass]
-
-    if req.execute_vcenter:
-        cmd.append("--execute-vcenter")
-    cmd += ["--probe-mode", req.probe_mode, "--max-retries", str(req.max_retries)]
-    if req.cleanup_on_failure:
-        cmd.append("--cleanup-on-failure")
-    if req.phased_testing:
-        cmd.append("--phased-testing")
-    cmd += ["--vms-per-subnet", str(req.vms_per_subnet)]
-    cmd += ["--max-vms-per-phase", str(req.max_vms_per_phase)]
-    if req.phases:
-        cmd += ["--phases", req.phases]
-    for vl in req.vrf_links:
-        cmd += ["--vrf-links", vl]
+    cfg_dict = _read_config()
+    vc_host = str(cfg_dict.get("vcenter_host", "")).strip()
+    # Plugin mode: session header supplied — skip credentials
+    session_id = x_vcenter_session.strip()
+    vc_user = "" if session_id else str(cfg_dict.get("vcenter_user", "")).strip()
+    vc_pass = "" if session_id else str(cfg_dict.get("vcenter_password", "")).strip()
 
     def _worker() -> None:
-        proc = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, bufsize=1, cwd=str(WORKSPACE),
-        )
-        _runs[run_id]["pid"] = proc.pid
-        if proc.stdout is None:
-            q.put(None)
-            return
-        for line in proc.stdout:
-            if line.startswith("__RESULT__:"):
-                try:
-                    _db.finish_run(run_id, json.loads(line[len("__RESULT__:"):].strip()))
-                except Exception:
-                    pass
-                continue
-            if line.startswith("__ERROR__:"):
-                try:
-                    _db.finish_run_error(run_id, line[len("__ERROR__:"):].strip())
-                except Exception:
-                    pass
-                continue
-            q.put(line)
-        proc.wait()
-        _runs[run_id]["returncode"] = proc.returncode
-        q.put(None)  # sentinel
+        rc = 4
+        try:
+            cfg = RunConfig(
+                run_id=run_id,
+                rows=_db.get_networks(),
+                probe_mode=req.probe_mode,
+                max_retries=req.max_retries,
+                cleanup_on_failure=req.cleanup_on_failure,
+                execute_vcenter=req.execute_vcenter,
+                phased_testing=req.phased_testing,
+                vms_per_subnet=req.vms_per_subnet,
+                max_vms_per_phase=req.max_vms_per_phase,
+                phases=req.phases,
+                vrf_links=list(req.vrf_links),
+                vcenter_host=vc_host,
+                vcenter_user=vc_user,
+                vcenter_password=vc_pass,
+                vcenter_session_id=session_id,
+                resource_pool=str(cfg_dict.get("resource_pool", "") or ""),
+                ovf_path=str(cfg_dict.get("ovf_path", "") or ""),
+                vm_prefix=str(cfg_dict.get("vm_prefix", "nettest") or "nettest"),
+            )
+            rc = execute_run(
+                cfg,
+                log_cb=lambda line: q.put(line),
+                result_cb=lambda r: _db.finish_run(run_id, r),
+                error_cb=lambda e: _db.finish_run_error(run_id, e),
+                objects_cb=lambda reg: _db.upsert_created_objects(run_id, reg),
+            )
+        except Exception as exc:
+            tb = traceback.format_exc()
+            logger.error("Worker thread crashed for run %s: %s\n%s", run_id, exc, tb)
+            _db.finish_run_error(run_id, {"error": str(exc), "type": type(exc).__name__, "traceback": tb})
+            rc = 4
+        finally:
+            _runs[run_id]["returncode"] = rc
+            q.put(None)  # always send sentinel
 
     threading.Thread(target=_worker, daemon=True).start()
     return {"run_id": run_id}
@@ -109,7 +100,7 @@ async def api_stream_run(run_id: str):
         raise HTTPException(404, "Run not found")
     run = _runs[run_id]
     q = run["queue"]
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
 
     def _get_next():
         while True:
@@ -145,13 +136,9 @@ def api_get_result(run_id: str):
 
 
 @router.post("/api/run/{run_id}/cleanup")
-def api_cleanup_run(run_id: str):
-    """Delete all VMs recorded in created-objects.json for a run."""
-    registry_path = ARTIFACTS / run_id / "created-objects.json"
-    if not registry_path.exists():
-        raise HTTPException(404, "No created-objects.json for this run")
-
-    registry = json.loads(registry_path.read_text(encoding="utf-8"))
+def api_cleanup_run(run_id: str, x_vcenter_session: str = Header(default="")):
+    """Delete all VMs recorded in the created_objects table for a run."""
+    registry = _db.get_created_objects(run_id)
     moids = [m for m in registry.get("vms", []) if m and m != "dry-run-moid"]
     if not moids:
         return {"cleaned": 0, "failed": 0, "skipped": 0, "detail": "no real VMs to delete"}
@@ -161,8 +148,11 @@ def api_cleanup_run(run_id: str):
     vcenter_user     = cfg.get("vcenter_user", "")
     vcenter_password = cfg.get("vcenter_password", "")
     vm_prefix        = cfg.get("vm_prefix", "nettest")
+    session_id       = x_vcenter_session.strip()
 
-    if not vcenter_host or not vcenter_user or not vcenter_password:
+    if not vcenter_host:
+        raise HTTPException(400, "vCenter host not configured")
+    if not session_id and (not vcenter_user or not vcenter_password):
         raise HTTPException(400, "vCenter credentials not configured")
 
     try:
@@ -171,7 +161,7 @@ def api_cleanup_run(run_id: str):
         raise HTTPException(500, "pyvmomi not installed")
 
     try:
-        si = connect_vcenter_direct(host=vcenter_host, user=vcenter_user, pwd=vcenter_password)
+        si = connect_vcenter_auto(host=vcenter_host, user=vcenter_user, pwd=vcenter_password, session_id=session_id)
     except Exception as exc:
         raise HTTPException(502, f"vCenter connect failed: {exc}")
 
@@ -198,7 +188,7 @@ def api_cleanup_run(run_id: str):
 
         failed_moids = {f["moid"] for f in failures}
         registry["vms"] = [m for m in registry["vms"] if m in failed_moids]
-        registry_path.write_text(json.dumps(registry, indent=2), encoding="utf-8")
+        _db.upsert_created_objects(run_id, registry)
 
         return {"cleaned": cleaned, "failed": failed, "skipped": skipped, "failures": failures}
     finally:

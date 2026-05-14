@@ -69,94 +69,10 @@
       <clr-icon shape="trash" size="14"></clr-icon>
     </button>
   </div>
-  <div #logEl class="log-area"><span *ngFor="let l of logLines" [class]="'log-'+l.cls">{{ l.text }}
-</span></div>
-</div>
-
-<div *ngIf="result" class="card">
-  <div class="card-header"><clr-icon shape="bar-chart" size="16"></clr-icon> Results</div>
-  <div class="card-block">
-    <div class="card-text">
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:1rem;flex-wrap:wrap">
-        <span class="label" [class.label-success]="result.FinalStatus==='PASS'" [class.label-danger]="result.FinalStatus!=='PASS'" style="font-size:1rem">{{ result.FinalStatus }}</span>
-        <span class="label label-success">&#x2713; {{ result.passed }} passed</span>
-        <span *ngIf="result.failed" class="label label-danger">&#x2717; {{ result.failed }} failed</span>
-        <span class="p6 text-muted">{{ result.total }} test cases &middot; {{ result.Plan?.probe_mode }}</span>
-        <span *ngIf="result.Plan?.phased_testing" class="label label-info">Phased</span>
-      </div>
-
-      <div *ngIf="result.Phases?.length" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:1rem">
-        <div *ngFor="let p of result.Phases" class="card" style="min-width:130px;max-width:170px;margin:0">
-          <div class="card-header p6" style="padding:4px 8px">
-            <span class="label" [ngClass]="phaseColor(p.phase_id)">{{ phaseName(p.phase_id) }}</span>
-          </div>
-          <div class="card-block" style="padding:4px 8px">
-            <div class="p6">{{ p.cases }} cases</div>
-            <div class="p6 text-success">&#x2713; {{ p.passed }}</div>
-            <div *ngIf="p.failed" class="p6 text-danger">&#x2717; {{ p.failed }}</div>
-          </div>
-        </div>
-      </div>
-
-      <div *ngFor="let matrix of result.matrices" style="margin-bottom:1.5rem">
-        <div class="p6" style="font-weight:600;margin-bottom:6px">
-          <span class="label" [ngClass]="matrix.phaseColor">{{ matrix.phaseLabel }}</span>
-          <span class="text-muted"> {{ matrix.pds.length }} cases</span>
-        </div>
-        <div class="matrix-wrap">
-          <table class="matrix-table">
-            <thead>
-              <tr>
-                <th style="text-align:left">src \ dst</th>
-                <th *ngFor="let dst of matrix.dstSubnets" style="text-align:center">
-                  <span>{{ dst }}</span>
-                  <span *ngIf="result.subnetVlan[dst]" style="display:block;font-size:.65rem;color:#888">VLAN {{ result.subnetVlan[dst] }}</span>
-                  <span *ngIf="result.subnetVrf[dst]" class="vrf-badge">{{ result.subnetVrf[dst] }}</span>
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr *ngFor="let src of matrix.srcSubnets">
-                <td style="font-weight:600;white-space:nowrap">
-                  {{ src }}
-                  <span *ngIf="result.subnetVlan[src]" style="font-size:.65rem;color:#888"> VLAN {{ result.subnetVlan[src] }}</span>
-                  <span *ngIf="result.subnetVrf[src]" class="vrf-badge">{{ result.subnetVrf[src] }}</span>
-                </td>
-                <td *ngFor="let dst of matrix.dstSubnets" [class]="src===dst ? 'c-self' : ''">
-                  <ng-container *ngIf="src!==dst">
-                    <span *ngFor="let cell of cellsFor(matrix, src, dst)"
-                          [class]="cellClass(cell)"
-                          [title]="'expected:'+cell.expected+' actual:'+cell.actual+' reason:'+cell.reason"
-                          style="display:inline-block;border-radius:3px;padding:1px 4px;font-size:.85em">
-                      {{ cellIcon(cell) }}<br><span style="font-size:.65em">{{ cell.actual }}</span>
-                    </span>
-                  </ng-container>
-                  <ng-container *ngIf="src===dst">&#x2014;</ng-container>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:8px" class="p6 text-muted">
-        <span><span class="c-pp" style="padding:1px 5px;border-radius:3px">&#x2713;</span> Reachable (expected)</span>
-        <span><span class="c-ff" style="padding:1px 5px;border-radius:3px">&#x1F512;</span> Blocked (expected)</span>
-        <span><span class="c-pf" style="padding:1px 5px;border-radius:3px">&#x2717;</span> Should reach, blocked</span>
-        <span><span class="c-fp" style="padding:1px 5px;border-radius:3px">&#x26A0;</span> Should block, reachable!</span>
-        <span><span class="c-uk" style="padding:1px 5px;border-radius:3px">?</span> Unknown</span>
-      </div>
-
-      <clr-alert *ngIf="result.Cleanup?.vm_cleanup?.retained_vms?.length" [clrAlertType]="'warning'" style="margin-top:1rem">
-        <clr-alert-item>
-          <span class="alert-text">
-            <strong>Retained VMs (run failed — kept for troubleshooting):</strong><br>
-            <span *ngFor="let v of result.Cleanup.vm_cleanup.retained_vms">
-              <code>{{ v.vm_name }}</code> — {{ v.ip_address }} ({{ v.moid }})<br>
-            </span>
-          </span>
-        </clr-alert-item>
-      </clr-alert>
-    </div>
+  <div #logEl class="log-area">
+    <span *ngFor="let l of logLines" [class]="'log-'+l.cls">{{ l.text }}</span>
   </div>
 </div>
+
+<app-result-panel [result]="result"></app-result-panel>
+

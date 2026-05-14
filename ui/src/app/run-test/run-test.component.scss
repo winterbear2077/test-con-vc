@@ -1,0 +1,21 @@
+.log-area {
+  background: #1e2d35;
+  color: #c5d5de;
+  font-family: 'Menlo', 'Consolas', monospace;
+  font-size: 0.72rem;
+  line-height: 1.5;
+  padding: 8px 12px;
+  min-height: 120px;
+  max-height: 320px;
+  overflow-y: auto;
+  overflow-x: hidden;   /* prevent long lines from stretching the layout */
+  word-break: break-all;
+
+  span { display: block; }
+  .log-ok   { color: #5dc65b; }
+  .log-err  { color: #f54f47; }
+  .log-warn { color: #e8a838; }
+  .log-hdr  { color: #7ec8e3; font-weight: 600; }
+}
+
+

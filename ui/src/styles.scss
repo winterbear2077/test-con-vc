@@ -25,6 +25,7 @@
   font-size: .78rem;
   height: 340px;
   overflow-y: auto;
+  overflow-x: hidden;
   padding: .75rem 1rem;
   border-radius: 0 0 .25rem .25rem;
   white-space: pre-wrap;
@@ -36,7 +37,7 @@
   .log-hdr  { color: #58a6ff; font-weight: 600; }
 }
 
-.matrix-wrap { overflow-x: auto; }
+.matrix-wrap { overflow-x: auto; max-width: 100%; }
 .matrix-table {
   font-size: .75rem;
   border-collapse: separate;
@@ -65,4 +66,30 @@
   display: flex; align-items: center; gap: 6px;
 }
 
-.content-area { padding: 1.2rem 1.5rem; }
+.content-area { padding: 1.2rem 1.5rem; min-width: 0; overflow-x: hidden; }
+
+/* Override Clarity's flex item min-width so content-area can shrink and never push the sidenav */
+.main-container .content-container .content-area {
+  min-width: 0;
+  overflow-x: hidden;
+}
+
+/* Sidenav uses class="sidenav" (not .clr-vertical-nav) so Clarity's flex:0 0 auto doesn't apply.
+   Prevent it from shrinking when content-area grows. */
+.main-container .content-container .sidenav {
+  flex-shrink: 0;
+}
+
+/* Clip any overflow at the container level so flex siblings are never displaced */
+.main-container .content-container {
+  overflow-x: hidden;
+}
+
+/* Fix Clarity alert icon vertical alignment */
+.alert-center-icon .alert-item {
+  align-items: center !important;
+}
+.alert-center-icon .alert-icon-wrapper {
+  align-self: center !important;
+  margin-top: 0 !important;
+}

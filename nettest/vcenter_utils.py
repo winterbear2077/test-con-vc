@@ -8,7 +8,17 @@ from typing import Any, Dict, Optional, Tuple
 
 
 def connect_vcenter(args: Any) -> Any:
-    """Create and return a vCenter service instance connection (from args namespace)."""
+    """Create and return a vCenter service instance.
+
+    Uses session cookie when ``args.vcenter_session_id`` is set (plugin mode),
+    otherwise falls back to explicit username/password credentials.
+    """
+    session_id = getattr(args, "vcenter_session_id", "")
+    if session_id:
+        return connect_vcenter_with_session(
+            host=str(args.vcenter_host),
+            soap_session_id=session_id,
+        )
     return connect_vcenter_direct(
         host=str(args.vcenter_host),
         user=str(args.vcenter_user),
@@ -50,6 +60,13 @@ def connect_vcenter_direct(host: str, user: str, pwd: str) -> Any:
     si = SmartConnect(host=host, user=user, pwd=pwd, sslContext=ssl_ctx)
     atexit.register(Disconnect, si)
     return si
+
+
+def connect_vcenter_auto(host: str, user: str = "", pwd: str = "", session_id: str = "") -> Any:
+    """Connect via session cookie (plugin mode) or explicit credentials."""
+    if session_id:
+        return connect_vcenter_with_session(host=host, soap_session_id=session_id)
+    return connect_vcenter_direct(host=host, user=user, pwd=pwd)
 
 
 def disconnect_vcenter(si: Any) -> None:

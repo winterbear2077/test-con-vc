@@ -1,29 +1,16 @@
-import { Component, OnDestroy, ViewChild, ElementRef } from '@angular/core';
+import { Component, NgZone, OnDestroy, ViewChild, ElementRef } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { ClarityModule } from '@clr/angular';
 import { ApiService } from '../api.service';
+import { ResultPanelComponent } from '../result-panel/result-panel.component';
 
 interface LogLine { text: string; cls: string; }
-
-const PHASE_NAMES: Record<string, string> = {
-  'intra-subnet': 'Intra-Subnet',
-  'intra-vrf': 'Intra-VRF',
-  'cross-vrf-allowlist': 'Cross-VRF Allow',
-  'cross-vrf-block': 'Cross-VRF Block',
-};
-
-const PHASE_COLORS: Record<string, string> = {
-  'intra-subnet': 'label-blue',
-  'intra-vrf': 'label-success',
-  'cross-vrf-allowlist': 'label-warning',
-  'cross-vrf-block': 'label-light-blue',
-};
 
 @Component({
   selector: 'app-run-test',
   standalone: true,
-  imports: [CommonModule, FormsModule, ClarityModule],
+  imports: [CommonModule, FormsModule, ClarityModule, ResultPanelComponent],
   templateUrl: './run-test.component.html',
   styleUrl: './run-test.component.scss'
 })
@@ -48,8 +35,9 @@ export class RunTestComponent implements OnDestroy {
   result: any = null;
 
   private _sse: EventSource | null = null;
+  private _sseDone = false;
 
-  constructor(private api: ApiService) {}
+  constructor(private api: ApiService, private zone: NgZone) {}
 
   ngOnDestroy() { this._sse?.close(); }
 
@@ -85,29 +73,36 @@ export class RunTestComponent implements OnDestroy {
   }
 
   private stream(runId: string) {
+    this._sseDone = false;
     this._sse?.close();
-    this._sse = new EventSource('/api/run/' + runId + '/stream');
+    this._sse = new EventSource(this.api.streamRunUrl(runId));
     this._sse.onmessage = (e) => {
-      const raw = e.data;
-      if (raw.startsWith('__DONE__:')) {
-        this._sse!.close();
-        const rc = parseInt(raw.split(':')[1]);
-        this.running = false;
-        this.indicator = rc === 0 ? 'pass' : 'fail';
-        this.appendLog('\u25B6 Finished (exit ' + rc + ')', rc === 0 ? 'ok' : 'err');
-        this.api.getRunResult(runId).subscribe({ next: r => this.result = this.processResult(r), error: () => {} });
-        return;
-      }
-      let line: string;
-      try { line = JSON.parse(raw); } catch { line = raw; }
-      const cls = line.includes('PASS') ? 'ok'
-                : (line.includes('fail') || line.includes('Error') || line.includes('failed')) ? 'err'
-                : (line.includes('Warning') || line.includes('warn')) ? 'warn' : '';
-      this.appendLog(line, cls);
+      this.zone.run(() => {
+        const raw = e.data;
+        if (raw.startsWith('__DONE__:')) {
+          this._sseDone = true;
+          this._sse!.close();
+          const rc = parseInt(raw.split(':')[1]);
+          this.running = false;
+          this.indicator = rc === 0 ? 'pass' : 'fail';
+          this.appendLog('\u25B6 Finished (exit ' + rc + ')', rc === 0 ? 'ok' : 'err');
+          this.api.getRunResult(runId).subscribe({ next: r => this.result = r, error: () => {} });
+          return;
+        }
+        let line: string;
+        try { line = JSON.parse(raw); } catch { line = raw; }
+        const cls = line.includes('PASS') ? 'ok'
+                  : (line.includes('fail') || line.includes('Error') || line.includes('failed')) ? 'err'
+                  : (line.includes('Warning') || line.includes('warn')) ? 'warn' : '';
+        this.appendLog(line, cls);
+      });
     };
     this._sse.onerror = () => {
-      this.running = false; this.indicator = 'idle';
-      this.appendLog('Connection lost.', 'warn');
+      this.zone.run(() => {
+        if (this._sseDone) return;  // stream closed normally after __DONE__ — ignore
+        this.running = false; this.indicator = 'idle';
+        this.appendLog('Connection lost.', 'warn');
+      });
     };
   }
 
@@ -120,58 +115,5 @@ export class RunTestComponent implements OnDestroy {
     });
   }
 
-  processResult(result: any): any {
-    if (!result) return null;
-    const details: any[] = Array.isArray(result.Results) ? result.Results : (result.Results?.details || []);
-    const subnetVrf: Record<string, string> = {};
-    const subnetVlan: Record<string, string> = {};
-    [...(result.ParsedInput?.vm_provisioned || []), ...(result.ParsedInput?.mngt_esxi_skipped || [])].forEach((r: any) => {
-      if (r.subnet) { subnetVrf[r.subnet] = r.vrf || ''; subnetVlan[r.subnet] = r.vlan || ''; }
-    });
-    const phaseOrder = ['intra-subnet', 'intra-vrf', 'cross-vrf-allowlist', 'cross-vrf-block'];
-    const detailsByPhase: Record<string, any[]> = {};
-    details.forEach(d => {
-      const ph = d.phase || 'intra-vrf';
-      if (!detailsByPhase[ph]) detailsByPhase[ph] = [];
-      detailsByPhase[ph].push(d);
-    });
-    const matrices = phaseOrder.filter(ph => (detailsByPhase[ph] || []).length > 0).map(ph => {
-      const pds = detailsByPhase[ph];
-      return {
-        ph, pds,
-        srcSubnets: [...new Set(pds.map((d: any) => d.src_subnet))],
-        dstSubnets: [...new Set(pds.map((d: any) => d.dst_subnet))],
-        phaseLabel: PHASE_NAMES[ph] || ph,
-        phaseColor: PHASE_COLORS[ph] || 'label-light-blue',
-      };
-    });
-    return { ...result, details, subnetVrf, subnetVlan, matrices,
-      total: details.length, passed: details.filter((d: any) => d.status === 'pass').length,
-      failed: details.filter((d: any) => d.status !== 'pass').length };
-  }
-
-  cellsFor(matrix: any, src: string, dst: string): any[] {
-    return matrix.pds.filter((d: any) => d.src_subnet === src && d.dst_subnet === dst);
-  }
-
-  cellClass(d: any): string {
-    const { expected, actual } = d;
-    if (actual === 'UNKNOWN') return 'c-uk';
-    if (expected === 'PASS' && actual === 'PASS') return 'c-pp';
-    if (expected === 'FAIL' && actual === 'FAIL') return 'c-ff';
-    if (expected === 'PASS' && actual === 'FAIL') return 'c-pf';
-    return 'c-fp';
-  }
-
-  cellIcon(d: any): string {
-    const { expected, actual } = d;
-    if (actual === 'UNKNOWN') return '?';
-    if (expected === 'PASS' && actual === 'PASS') return '\u2713';
-    if (expected === 'FAIL' && actual === 'FAIL') return '\uD83D\uDD12';
-    if (expected === 'PASS' && actual === 'FAIL') return '\u2717';
-    return '\u26A0';
-  }
-
-  phaseName(ph: string): string { return PHASE_NAMES[ph] || ph; }
-  phaseColor(ph: string): string { return PHASE_COLORS[ph] || 'label-light-blue'; }
 }
+

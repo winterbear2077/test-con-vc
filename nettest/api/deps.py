@@ -22,39 +22,19 @@ _runs: Dict[str, dict] = {}
 
 # ── Config helpers ────────────────────────────────────────────────────────────
 def _read_config() -> dict:
-    data = _db.get_config()
-    if not data and CONFIG_FILE.exists():
-        data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
-    return data
-
-
-_VC_KEYS = {"vcenter_host", "vcenter_user", "vcenter_password"}
+    """Read config from SQLite only. Seeded at startup by migrate_config_from_file."""
+    return _db.get_config()
 
 
 def _write_config(data: dict) -> None:
-    """Persist config to SQLite and keep JSON file in sync for runner compat.
-    vCenter credentials are stored in SQLite only, not in the JSON file.
-    """
+    """Persist config to SQLite only. nettest.config.json is read-only static config."""
     _db.save_config(data)
-    json_safe = {k: v for k, v in data.items() if k not in _VC_KEYS}
-    CONFIG_FILE.write_text(json.dumps(json_safe, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
 # ── Input helpers ─────────────────────────────────────────────────────────────
 def _input_path() -> Path:
     val = str(_read_config().get("input", "") or "").strip()
     return WORKSPACE / (val if val else "input.csv")
-
-
-def _sync_networks_to_csv(rows: list) -> None:
-    """Write networks to CSV so the runner process can still read it."""
-    p = _input_path()
-    fields = ["vlan", "subnet", "gw", "vrf", "cluster", "datacenter"]
-    with open(p, "w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=fields)
-        w.writeheader()
-        for row in rows:
-            w.writerow({k: str(row.get(k, "")) for k in fields})
 
 
 def _parse_input_file(path: Path) -> list:

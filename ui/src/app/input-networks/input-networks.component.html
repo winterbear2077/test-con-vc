@@ -10,7 +10,7 @@
         <clr-icon shape="plus-circle" size="14"></clr-icon> Add Row
       </button>
       <button class="btn btn-outline-info btn-sm" (click)="syncInventory()" [disabled]="syncing">
-        <clr-icon shape="download-cloud" size="14" [class.spin]="syncing"></clr-icon>
+        <clr-icon [shape]="syncing ? 'refresh' : 'download-cloud'" size="14" [class.spin]="syncing"></clr-icon>
         {{ syncing ? 'Syncing...' : 'Sync from vCenter' }}
       </button>
       <button class="btn btn-primary btn-sm" (click)="save()">
@@ -29,7 +29,7 @@
       <table class="table table-compact" style="margin-bottom:0">
         <thead>
           <tr>
-            <th>Datacenter</th><th>Cluster</th><th>VLAN / Portgroup</th>
+            <th>Datacenter</th><th>Cluster</th><th>Portgroup / VLAN</th>
             <th>Subnet</th><th>Gateway</th><th>VRF</th><th style="width:36px"></th>
           </tr>
         </thead>
@@ -51,11 +51,19 @@
               <input *ngIf="!inventory" type="text" class="clr-input" [(ngModel)]="row.cluster" (ngModelChange)="onClusterChange(row)" placeholder="cluster" />
             </td>
             <td>
-              <select *ngIf="inventory && pgOptions(row.datacenter || '', row.cluster || '').length" [(ngModel)]="row.vlan" class="clr-select" style="min-width:180px">
-                <option value="">— Portgroup —</option>
-                <option *ngFor="let pg of pgOptions(row.datacenter || '', row.cluster || '')" [value]="pg.value">{{ pg.label }}</option>
-              </select>
-              <input *ngIf="!inventory || !pgOptions(row.datacenter || '', row.cluster || '').length" type="text" class="clr-input" [(ngModel)]="row.vlan" placeholder="vlan / portgroup" />
+              <!-- Portgroup dropdown — selecting auto-fills vlan; both stored separately -->
+              <ng-container *ngIf="inventory && pgOptions(row.datacenter || '', row.cluster || '').length">
+                <select [(ngModel)]="row['pg']" (ngModelChange)="onPgChange(row)"
+                        class="clr-select" style="min-width:200px">
+                  <option value="">— Portgroup —</option>
+                  <option *ngFor="let pg of pgOptions(row.datacenter || '', row.cluster || '')" [value]="pg.name">{{ pg.label }}</option>
+                </select>
+                <span *ngIf="row.vlan" class="label label-light-blue" style="margin-left:4px;font-size:.68rem">VLAN {{ row.vlan }}</span>
+              </ng-container>
+              <ng-container *ngIf="!inventory || !pgOptions(row.datacenter || '', row.cluster || '').length">
+                <input type="text" class="clr-input" [(ngModel)]="row['pg']" placeholder="portgroup" style="width:130px" />
+                <input type="text" class="clr-input" [(ngModel)]="row.vlan" placeholder="vlan" style="width:54px;margin-left:4px" />
+              </ng-container>
             </td>
             <td><input type="text" class="clr-input" [(ngModel)]="row.subnet" placeholder="10.0.0.0/24" /></td>
             <td><input type="text" class="clr-input" [(ngModel)]="row.gw" placeholder="10.0.0.1" /></td>
@@ -77,10 +85,7 @@
   </div>
 </div>
 
-<clr-alert [clrAlertType]="'warning'" [clrAlertClosable]="false" style="margin-top:.75rem">
-  <clr-alert-item>
-    <span class="alert-text p6">
-      Rows where <strong>Cluster = MNGT</strong> are treated as ESXi management networks — no test VM will be deployed.
-    </span>
-  </clr-alert-item>
-</clr-alert>
+<div class="mngt-notice">
+  <span class="mngt-icon">⚠</span>
+  <span>Rows where <strong>Cluster = MNGT</strong> are treated as ESXi management networks — no test VM will be deployed.</span>
+</div>

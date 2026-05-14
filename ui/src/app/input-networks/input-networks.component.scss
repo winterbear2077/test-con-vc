@@ -1,0 +1,22 @@
+.mngt-notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: .75rem;
+  padding: .6rem .9rem;
+  background: #fff3cd;
+  border: 1px solid #f0ad4e;
+  border-radius: 3px;
+  color: #3d2b00;
+  font-size: .78rem;
+  line-height: 1.4;
+}
+
+.mngt-icon {
+  font-size: 1rem;
+  line-height: 1;
+  flex-shrink: 0;
+  color: #b46800;
+  position: relative;
+  top: -1px;
+}

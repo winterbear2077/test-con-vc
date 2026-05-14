@@ -8,9 +8,7 @@ from pydantic import BaseModel
 
 import nettest.db as _db
 from nettest.api.deps import (
-    _input_path,
     _parse_input_file,
-    _sync_networks_to_csv,
 )
 
 router = APIRouter()
@@ -20,14 +18,7 @@ router = APIRouter()
 @router.get("/api/input")
 def api_get_input():
     rows = _db.get_networks()
-    # Fallback: read from file if DB is empty
-    if not rows:
-        p = _input_path()
-        if p.exists():
-            rows = _parse_input_file(p)
-            if rows:
-                _db.save_networks(rows)
-    return {"rows": rows, "path": str(_input_path())}
+    return {"rows": rows}
 
 
 class InputIn(BaseModel):
@@ -37,7 +28,6 @@ class InputIn(BaseModel):
 @router.put("/api/input")
 def api_put_input(body: InputIn):
     _db.save_networks(body.rows)
-    _sync_networks_to_csv(body.rows)
     return {"ok": True}
 
 

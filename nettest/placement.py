@@ -12,10 +12,12 @@ def validate_vcenter_requirements(args: Any) -> None:
     missing = []
     if not args.vcenter_host:
         missing.append("--vcenter-host")
-    if not args.vcenter_user:
-        missing.append("--vcenter-user")
-    if not args.vcenter_password:
-        missing.append("--vcenter-password")
+    # In plugin (session) mode credentials are not required
+    if not getattr(args, "vcenter_session_id", ""):
+        if not args.vcenter_user:
+            missing.append("--vcenter-user")
+        if not args.vcenter_password:
+            missing.append("--vcenter-password")
     if not args.ovf_path:
         missing.append("--ovf-path")
     if missing:

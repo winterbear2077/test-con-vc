@@ -7,7 +7,16 @@ Open:   http://localhost:5000
 """
 from __future__ import annotations
 
+import logging
 import re as _re
+
+# Configure root logger before uvicorn captures it, so worker thread
+# errors and nettest package logs propagate to stderr for diagnostics.
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)-8s %(name)s  %(message)s",
+    datefmt="%H:%M:%S",
+)
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -58,10 +67,29 @@ def root(request: Request):
     """Serve index.html, replacing the <base> tag so assets resolve correctly
     when the page is iframed by vCenter from a different origin."""
     html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
-    plugin_url = _read_config().get("plugin_url", "").rstrip("/")
-    if not plugin_url:
-        plugin_url = f"{request.url.scheme}://{request.url.netloc}"
-    base_tag = f'<base href="{plugin_url}/">'
+    request_origin = f"{request.url.scheme}://{request.url.netloc}"
+
+    # Detect iframe / plugin context:
+    #   1. URL has ?sessionId= or ?plugin=1  (vSphere Client passes these)
+    #   2. Referer header is from a different origin than this server
+    # In those cases use plugin_url so EventSource / API calls resolve correctly.
+    # For direct browser access neither condition holds → use request origin.
+    params = request.query_params
+    referer = request.headers.get("referer", "")
+    referer_origin = ""
+    try:
+        from urllib.parse import urlparse as _up
+        referer_origin = _up(referer).scheme + "://" + _up(referer).netloc if referer else ""
+    except Exception:
+        pass
+
+    in_iframe = bool(params.get("sessionId") or params.get("plugin")) or (
+        bool(referer_origin) and referer_origin != request_origin
+    )
+
+    plugin_url = _read_config().get("plugin_url", "").rstrip("/") if in_iframe else ""
+    base_origin = plugin_url if plugin_url else request_origin
+    base_tag = f'<base href="{base_origin}/">'
     html, n = _re.subn(r'<base\s[^>]*>', base_tag, html, count=1)
     if not n:
         html = html.replace("<head>", f"<head>\n  {base_tag}", 1)

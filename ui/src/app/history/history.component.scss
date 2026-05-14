@@ -1,0 +1,86 @@
+.history-row {
+  cursor: pointer;
+  transition: background .1s;
+  &:hover { background: #f0f7ff; }
+}
+
+.history-row-selected {
+  background: #daeeff !important;
+  td { font-weight: 500; }
+}
+
+/* Pagination */
+.pagination-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: .5rem;
+}
+
+.pag-arrow {
+  appearance: none;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  color: #0079b8;
+  font-size: 1rem;
+  line-height: 1;
+  padding: 0 6px;
+  margin: 0;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  &:disabled { color: #ccc; cursor: default; }
+  &:not(:disabled):hover { color: #004a70; }
+}
+
+.pag-info {
+  font-size: .75rem;
+  color: #666;
+  line-height: 1;
+  padding: 0 2px;
+}
+
+/* Slide-over overlay */
+.result-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,.25);
+  z-index: 1000;
+}
+
+/* Slide-over drawer */
+.result-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  width: min(680px, 100vw);
+  height: 100vh;
+  background: #fff;
+  box-shadow: -4px 0 16px rgba(0,0,0,.18);
+  z-index: 1001;
+  display: flex;
+  flex-direction: column;
+  transform: translateX(100%);
+  transition: transform .25s ease;
+
+  &.result-drawer-open { transform: translateX(0); }
+}
+
+.result-drawer-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: .6rem 1rem;
+  background: #21333b;
+  color: #fff;
+  font-size: .85rem;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.result-drawer-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 1rem;
+}

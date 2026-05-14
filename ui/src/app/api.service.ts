@@ -76,8 +76,15 @@ export interface HistoryEntry {
 @Injectable({ providedIn: 'root' })
 export class ApiService {
   private base = '/api';
+  /** Absolute base derived from <base href> so EventSource works inside vCenter iframes. */
+  private absBase: string;
 
-  constructor(private http: HttpClient, private plugin: PluginContextService) {}
+  constructor(private http: HttpClient, private plugin: PluginContextService) {
+    // document.baseURI respects the <base href> tag (which web_app.py rewrites for plugin mode).
+    // Strip trailing slash then append /api so EventSource uses the correct backend origin.
+    const base = (document.baseURI || window.location.href).replace(/\/+$/, '');
+    this.absBase = base + '/api';
+  }
 
   /** Returns headers including X-Vcenter-Session when in plugin mode and session is available. */
   private sessionHeaders(): { headers?: HttpHeaders } {
@@ -130,7 +137,12 @@ export class ApiService {
   }
 
   startRun(req: RunRequest): Observable<{ run_id: string }> {
-    return this.http.post<{ run_id: string }>(this.base + '/run', req);
+    return this.http.post<{ run_id: string }>(this.base + '/run', req, this.sessionHeaders());
+  }
+
+  /** Returns the absolute URL to use with EventSource (must be absolute to work in vCenter iframes). */
+  streamRunUrl(runId: string): string {
+    return this.absBase + '/run/' + runId + '/stream';
   }
 
   getRunResult(runId: string): Observable<any> {

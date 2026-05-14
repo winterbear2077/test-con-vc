@@ -11,14 +11,21 @@ _db_path: Path | None = None
 
 DDL = """
 CREATE TABLE IF NOT EXISTS runs (
-    run_id      TEXT PRIMARY KEY,
-    status      TEXT NOT NULL DEFAULT 'running',
-    probe_mode  TEXT NOT NULL DEFAULT '',
-    total       INTEGER NOT NULL DEFAULT 0,
-    passed      INTEGER NOT NULL DEFAULT 0,
-    failed      INTEGER NOT NULL DEFAULT 0,
+    run_id     TEXT PRIMARY KEY,
+    status     TEXT NOT NULL DEFAULT 'running',
+    probe_mode TEXT NOT NULL DEFAULT '',
+    total      INTEGER NOT NULL DEFAULT 0,
+    passed     INTEGER NOT NULL DEFAULT 0,
+    failed     INTEGER NOT NULL DEFAULT 0,
     result_json TEXT,
     created_at  TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS created_objects (
+    run_id TEXT PRIMARY KEY REFERENCES runs(run_id) ON DELETE CASCADE,
+    vms_json  TEXT NOT NULL DEFAULT '[]',
+    nics_json TEXT NOT NULL DEFAULT '[]',
+    tags_json TEXT NOT NULL DEFAULT '[]'
 );
 
 CREATE TABLE IF NOT EXISTS config (
@@ -30,6 +37,7 @@ CREATE TABLE IF NOT EXISTS networks (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     datacenter TEXT NOT NULL DEFAULT '',
     cluster    TEXT NOT NULL DEFAULT '',
+    pg         TEXT NOT NULL DEFAULT '',
     vlan       TEXT NOT NULL DEFAULT '',
     subnet     TEXT NOT NULL DEFAULT '',
     gw         TEXT NOT NULL DEFAULT '',
@@ -51,6 +59,16 @@ def init(db_path: Path) -> None:
     _db_path = db_path
     with _connect() as con:
         con.executescript(DDL)
+        # Migration: drop legacy column on older DBs (best-effort, SQLite ≥3.35)
+        try:
+            con.execute("ALTER TABLE runs DROP COLUMN created_objects_json")
+        except sqlite3.OperationalError:
+            pass  # column absent or SQLite too old — harmless
+        # Migration: add pg column to networks if missing
+        try:
+            con.execute("ALTER TABLE networks ADD COLUMN pg TEXT NOT NULL DEFAULT ''")
+        except sqlite3.OperationalError:
+            pass  # already exists
 
 
 def _connect() -> sqlite3.Connection:
@@ -95,13 +113,20 @@ def finish_run(run_id: str, result: dict) -> None:
         )
 
 
-def finish_run_error(run_id: str, detail: str) -> None:
+def finish_run_error(run_id: str, detail: "dict | str") -> None:
+    if isinstance(detail, str):
+        try:
+            detail = json.loads(detail)
+        except Exception:
+            detail = {"error": detail}
+    error_result = json.dumps({"FinalStatus": "error", **detail}, ensure_ascii=False)
     with _lock, _connect() as con:
         con.execute(
-            """INSERT INTO runs (run_id, status, created_at)
-               VALUES (?, 'error', ?)
-               ON CONFLICT(run_id) DO UPDATE SET status='error'""",
-            (run_id, run_id),
+            """INSERT INTO runs (run_id, status, created_at, result_json)
+               VALUES (?, 'error', ?, ?)
+               ON CONFLICT(run_id) DO UPDATE SET
+                   status='error', result_json=excluded.result_json""",
+            (run_id, run_id, error_result),
         )
 
 
@@ -117,7 +142,46 @@ def get_history(limit: int = 100) -> list[dict]:
 
 def delete_run(run_id: str) -> None:
     with _lock, _connect() as con:
+        con.execute("PRAGMA foreign_keys=ON")
         con.execute("DELETE FROM runs WHERE run_id=?", (run_id,))
+
+
+def upsert_created_objects(run_id: str, registry: dict) -> None:
+    """Persist the created-objects registry in the dedicated table."""
+    with _lock, _connect() as con:
+        con.execute(
+            """INSERT INTO created_objects (run_id, vms_json, nics_json, tags_json)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(run_id) DO UPDATE SET
+                   vms_json=excluded.vms_json,
+                   nics_json=excluded.nics_json,
+                   tags_json=excluded.tags_json""",
+            (
+                run_id,
+                json.dumps(registry.get("vms", []), ensure_ascii=False),
+                json.dumps(registry.get("nics", []), ensure_ascii=False),
+                json.dumps(registry.get("tags", []), ensure_ascii=False),
+            ),
+        )
+
+
+def get_created_objects(run_id: str) -> dict:
+    """Return the created-objects registry for a run, or an empty registry."""
+    with _connect() as con:
+        row = con.execute(
+            "SELECT vms_json, nics_json, tags_json FROM created_objects WHERE run_id=?",
+            (run_id,),
+        ).fetchone()
+    if row:
+        try:
+            return {
+                "vms":  json.loads(row[0] or "[]"),
+                "nics": json.loads(row[1] or "[]"),
+                "tags": json.loads(row[2] or "[]"),
+            }
+        except Exception:
+            pass
+    return {"vms": [], "nics": [], "tags": []}
 
 
 def get_result(run_id: str) -> dict | None:
@@ -189,13 +253,13 @@ def migrate_config_from_file(config_path: Path) -> None:
 
 # ── Networks ──────────────────────────────────────────────────────────────────
 
-_NETWORK_FIELDS = ("datacenter", "cluster", "vlan", "subnet", "gw", "vrf")
+_NETWORK_FIELDS = ("datacenter", "cluster", "pg", "vlan", "subnet", "gw", "vrf")
 
 
 def get_networks() -> list[dict]:
     with _connect() as con:
         rows = con.execute(
-            "SELECT datacenter, cluster, vlan, subnet, gw, vrf FROM networks ORDER BY id"
+            "SELECT datacenter, cluster, pg, vlan, subnet, gw, vrf FROM networks ORDER BY id"
         ).fetchall()
     return [dict(r) for r in rows]
 
@@ -205,7 +269,7 @@ def save_networks(rows: list[dict]) -> None:
         con.execute("DELETE FROM networks")
         for row in rows:
             con.execute(
-                "INSERT INTO networks (datacenter, cluster, vlan, subnet, gw, vrf) VALUES (?,?,?,?,?,?)",
+                "INSERT INTO networks (datacenter, cluster, pg, vlan, subnet, gw, vrf) VALUES (?,?,?,?,?,?,?)",
                 tuple(str(row.get(f, "")).strip() for f in _NETWORK_FIELDS),
             )
 
