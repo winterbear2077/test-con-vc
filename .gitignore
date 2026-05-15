@@ -39,3 +39,6 @@ ovf/*.nvram
 
 # tls
 *.pem
+
+# iso
+*.iso

@@ -1,8 +1,9 @@
-"""OVF deployment and post-deploy guest network configuration.
+"""OVF deployment and serial-port attachment for lightweight test VMs.
 
-Deploys a pre-built OVF template (with open-vm-tools pre-installed) into
-vCenter, maps the NIC to the target DPG, and configures static networking
-via the VMware Guest Operations API — no ISO boot, no CD drives.
+Deploys a pre-built OVF template into vCenter, maps the NIC to the target DPG,
+and attaches a virtual serial port backed by a TCP server socket on the
+controller host.  The guest communicates probe config and results over the
+serial device (/dev/ttyS0) — no open-vm-tools, no Guest Operations API.
 """
 
 from __future__ import annotations
@@ -459,3 +460,98 @@ def clone_vm_linked(
         wait_for_task(cloned_vm.ReconfigVM_Task(reconfig), timeout_sec=60)
 
     return cloned_vm
+
+
+# ── Serial-port device helper ──────────────────────────────────────────────────
+
+def add_serial_port_tcp(
+    vim: Any,
+    vm_obj: Any,
+    controller_ip: str,
+    port: int,
+) -> None:
+    """Attach a virtual serial port backed by a TCP client connection.
+
+    The VM initiates an outbound TCP connection to ``controller_ip:port`` when
+    powered on.  The controller's :class:`nettest.serial_probe.SerialProbeServer`
+    must already be listening on that port before the VM boots.
+
+    This is a pure vCenter API call — no VMware Tools required.
+    """
+    from nettest.vcenter_utils import wait_for_task
+
+    serial = vim.vm.device.VirtualSerialPort()
+    serial.key = -1
+
+    backing = vim.vm.device.VirtualSerialPort.URIBackingInfo()
+    backing.serviceURI = f"tcp://{controller_ip}:{port}"
+    backing.direction = "client"  # VM connects outbound to controller
+    backing.proxyURI = ""
+    serial.backing = backing
+    serial.yieldOnPoll = True
+
+    spec = vim.vm.device.VirtualDeviceSpec()
+    spec.operation = vim.vm.device.VirtualDeviceSpec.Operation.add
+    spec.device = serial
+
+    reconfig = vim.vm.ConfigSpec()
+    reconfig.deviceChange = [spec]
+    wait_for_task(vm_obj.ReconfigVM_Task(reconfig), timeout_sec=60)
+    logger.info("Added serial port (TCP client -> %s:%s) to %s", controller_ip, port, vm_obj.name)
+
+
+# ── VMCI / vsock device helpers ────────────────────────────────────────────────
+
+def ensure_vmci_device(vim: Any, vm_obj: Any) -> None:
+    """Add a VirtualVMCIDevice if one is not already present on the VM.
+
+    The VMCI device is required for AF_VSOCK guest↔host communication.
+    If the device is already present this is a no-op.
+    """
+    from nettest.vcenter_utils import wait_for_task
+
+    devices = (
+        getattr(getattr(vm_obj, "config", None), "hardware", None) and
+        getattr(vm_obj.config.hardware, "device", [])
+    ) or []
+    for dev in devices:
+        if isinstance(dev, vim.vm.device.VirtualVMCIDevice):
+            logger.debug("VMCI device already present on %s", vm_obj.name)
+            return
+
+    vmci = vim.vm.device.VirtualVMCIDevice()
+    vmci.key = -1
+    vmci.allowUnrestrictedCommunication = False  # default — guests talk to host only
+
+    spec = vim.vm.device.VirtualDeviceSpec()
+    spec.operation = vim.vm.device.VirtualDeviceSpec.Operation.add
+    spec.device = vmci
+
+    reconfig = vim.vm.ConfigSpec()
+    reconfig.deviceChange = [spec]
+    wait_for_task(vm_obj.ReconfigVM_Task(reconfig), timeout_sec=60)
+    logger.info("Added VMCI device to %s", vm_obj.name)
+
+
+def get_vmci_cid(vm_obj: Any) -> Optional[int]:
+    """Return the VMCI Context ID (CID) of *vm_obj*, or None if unavailable.
+
+    The CID is assigned by vSphere when the VMCI device is added and persists
+    across reboots.  It is used by the vsock probe server to map incoming
+    connections back to their source VM.
+    """
+    try:
+        from pyVmomi import vim  # type: ignore
+    except ImportError:
+        return None
+
+    devices = (
+        getattr(getattr(vm_obj, "config", None), "hardware", None) and
+        getattr(vm_obj.config.hardware, "device", [])
+    ) or []
+    for dev in devices:
+        if isinstance(dev, vim.vm.device.VirtualVMCIDevice):
+            cid = getattr(dev, "id", None)
+            if cid is not None:
+                return int(cid)
+    return None

@@ -82,6 +82,46 @@ def parse_args() -> argparse.Namespace:
         "--run-id", default="",
         help="Override the auto-generated run ID (used by the web UI to keep directory names in sync)",
     )
+
+    # ── Probe communication channel ───────────────────────────────────────────
+    parser.add_argument(
+        "--poll-method",
+        choices=["guestinfo", "serial", "vsock"],
+        default="guestinfo",
+        help="How the controller communicates with test VMs: "
+             "guestinfo (vmtools/extraConfig, default), "
+             "serial (TCP-backed virtual serial port, no vmtools needed), "
+             "vsock (AF_VSOCK over VMCI, no vmtools needed; controller must run on same ESXi host)",
+    )
+    parser.add_argument(
+        "--serial-probe-host", default="",
+        help="Controller IP reachable from ESXi for serial-port TCP backing. "
+             "Auto-detected when empty (outbound IP toward vCenter).",
+    )
+    parser.add_argument(
+        "--serial-base-port", type=int, default=10000,
+        help="First TCP port for serial-port backing; each VM gets base+index.",
+    )
+    parser.add_argument(
+        "--vsock-base-port", type=int, default=9000,
+        help="VMCI/vsock port the guest connects to on VMADDR_CID_HOST (CID=2).",
+    )
+
+    # ── VM boot method ────────────────────────────────────────────────────────
+    parser.add_argument(
+        "--boot-method",
+        choices=["ovf", "memboot"],
+        default="ovf",
+        help="VM boot method: "
+             "ovf (deploy OVF seed VM per cluster + linked clones, default), "
+             "memboot (diskless mini ISO boot — no VMDK, ~13 MB ISO uploaded once per cluster)",
+    )
+    parser.add_argument(
+        "--memboot-iso-path", default="",
+        help="Path to the mini nettest ISO (built with ovf/build_mini_iso.sh). "
+             "Required when --boot-method=memboot. "
+             "May also be a pre-staged datastore path like '[DatastoreName] nettest-iso/nettest-mini.iso'.",
+    )
     return parser.parse_args()
 
 
@@ -137,6 +177,12 @@ def run() -> int:
         max_vms_per_phase=_get("max_vms_per_phase", 20),
         vrf_links=_get("vrf_links", []),
         phases=_get("phases", ""),
+        poll_method=_get("poll_method", "guestinfo"),
+        serial_probe_host=_get("serial_probe_host", ""),
+        serial_base_port=_get("serial_base_port", 10000),
+        vsock_base_port=_get("vsock_base_port", 9000),
+        boot_method=_get("boot_method", "ovf"),
+        memboot_iso_path=_get("memboot_iso_path", ""),
     )
 
     import json as _json

@@ -1,0 +1,22 @@
+[package]
+name = "netprobe"
+version = "0.1.0"
+edition = "2021"
+description = "Lightweight network test probe for vSphere nettest VMs"
+
+[[bin]]
+name = "netprobe"
+path = "src/main.rs"
+
+[dependencies]
+# Minimal JSON parsing
+serde_json = { version = "1", default-features = false, features = ["std"] }
+# Raw socket + termios access (AF_VSOCK, serial, RTnetlink via raw syscalls)
+libc = { version = "0.2", default-features = false }
+
+[profile.release]
+opt-level     = "z"   # optimise for binary size
+lto           = true  # link-time optimisation
+codegen-units = 1     # single CGU — better LTO, smaller binary
+panic         = "abort"
+strip         = true

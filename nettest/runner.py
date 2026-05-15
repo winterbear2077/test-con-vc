@@ -66,6 +66,20 @@ class RunConfig:
         max_vms_per_phase: int = 20,
         vrf_links: Optional[List[Any]] = None,
         phases: str = "",
+        # ── Probe communication channel ───────────────────────────────────────
+        poll_method: str = "guestinfo",
+        # serial: controller IP reachable by ESXi NFC (auto-detected when empty)
+        serial_probe_host: str = "",
+        # first TCP port for serial-port backing; each VM gets base+index
+        serial_base_port: int = 10000,
+        # vsock port the guest connects to on VMADDR_CID_HOST (CID=2)
+        vsock_base_port: int = 9000,
+        # ── VM boot method ────────────────────────────────────────────────────
+        # "ovf": deploy OVF seed VM per cluster + linked clones (default)
+        # "memboot": diskless Alpine ISO boot, no VMDK at all
+        boot_method: str = "ovf",
+        # local ISO path (or pre-staged "[ds] path" string) for boot_method=memboot
+        memboot_iso_path: str = "",
     ):
         self.run_id = run_id or now_run_id()
         self.input = input
@@ -92,6 +106,12 @@ class RunConfig:
         self.max_vms_per_phase = max_vms_per_phase
         self.vrf_links = vrf_links or []
         self.phases = phases
+        self.poll_method = poll_method
+        self.serial_probe_host = serial_probe_host
+        self.serial_base_port = serial_base_port
+        self.vsock_base_port = vsock_base_port
+        self.boot_method = boot_method
+        self.memboot_iso_path = memboot_iso_path
 
 
 def execute_run(
@@ -166,6 +186,25 @@ def execute_run(
         all_vm_instances: List            = []
         cleanup_result = None
         phase_summaries: List[Dict] = []
+
+        # ── Initialise probe server (serial / vsock) ──────────────────────────
+        # Attach the server object to cfg so provisioning.py can reach it via
+        # getattr(args, "_serial_server") / getattr(args, "_vsock_server").
+        _serial_srv = None
+        _vsock_srv  = None
+        if cfg.execute_vcenter and cfg.probe_mode in ("in-guest", "in-guest-ping"):
+            if cfg.poll_method == "serial":
+                from nettest.serial_probe import SerialProbeServer, detect_controller_ip
+                host = cfg.serial_probe_host or detect_controller_ip(cfg.vcenter_host)
+                _serial_srv = SerialProbeServer(host=host, base_port=cfg.serial_base_port)
+                cfg._serial_server = _serial_srv  # type: ignore[attr-defined]
+                logger.info("SerialProbeServer listening on %s starting from port %s",
+                            host, cfg.serial_base_port)
+            elif cfg.poll_method == "vsock":
+                from nettest.vsock_probe import VsockProbeServer
+                _vsock_srv = VsockProbeServer(port=cfg.vsock_base_port)
+                cfg._vsock_server = _vsock_srv  # type: ignore[attr-defined]
+                logger.info("VsockProbeServer listening on vsock port %s", cfg.vsock_base_port)
 
         # ── Phased testing ────────────────────────────────────────────────────
         if cfg.phased_testing:

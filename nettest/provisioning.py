@@ -19,6 +19,7 @@ from nettest.vcenter_utils import vcenter_session, wait_for_task
 from nettest.ovf_deploy import (
     deploy_ovf_vm, write_probe_guestinfo, write_probe_ready, poll_probe_results,
     wait_for_probe_status, take_vm_snapshot, clone_vm_linked,
+    add_serial_port_tcp, ensure_vmci_device, get_vmci_cid,
 )
 
 
@@ -386,28 +387,37 @@ def provision_test_vms(
             unique_networks[network_key] = row
 
     root_pw = "nettest-alpine"
+    boot_method = str(getattr(args, "boot_method", "ovf") or "ovf")
 
-    ovf_path = str(getattr(args, "ovf_path", "") or "")
-    if not ovf_path or not os.path.isfile(ovf_path):
-        raise RuntimeError(
-            f"OVF template not found: {ovf_path!r}. "
-            "Set 'ovf_path' in config or pass --ovf-path."
-        )
+    if boot_method == "ovf":
+        ovf_path = str(getattr(args, "ovf_path", "") or "")
+        if not ovf_path or not os.path.isfile(ovf_path):
+            raise RuntimeError(
+                f"OVF template not found: {ovf_path!r}. "
+                "Set 'ovf_path' in config or pass --ovf-path."
+            )
+    elif boot_method == "memboot":
+        memboot_iso_path = str(getattr(args, "memboot_iso_path", "") or "")
+        if not memboot_iso_path:
+            raise RuntimeError(
+                "memboot_iso_path is required when boot_method='memboot'. "
+                "Build it with ovf/build_mini_iso.sh and pass --memboot-iso-path."
+            )
+    else:
+        raise RuntimeError(f"Unknown boot_method: {boot_method!r}. Use 'ovf' or 'memboot'.")
 
     with vcenter_session(args) as si:
         content = si.RetrieveContent()
 
-        # ── Build one seed VM per (dc, cluster) for linked cloning ─────────────
-        # Uploading a 300+ MB VMDK for every test VM is expensive.  Instead we
-        # deploy the OVF once per cluster, take a memory-less snapshot, and
-        # create all test VMs as linked clones (delta disks only — takes seconds).
-        #
-        # Seed key: (dc_name, cl_name).  Each seed is tracked for cleanup.
-        seed_vm_map: Dict[tuple, Any] = {}          # key -> seed vm_obj
-        seed_snap_map: Dict[tuple, Any] = {}        # key -> snapshot moRef
-        seed_vm_instances: List[Any] = []           # for cleanup / registry
+        # ── Per-cluster initialisation ─────────────────────────────────────────
+        # ovf:     deploy seed VM once per cluster → linked clones later
+        # memboot: upload ISO once per cluster → create VMs directly later
+        seed_vm_map: Dict[tuple, Any] = {}          # ovf:     (dc, cl) -> seed vm_obj
+        seed_snap_map: Dict[tuple, Any] = {}        # ovf:     (dc, cl) -> snapshot moRef
+        seed_vm_instances: List[Any] = []           # ovf:     for cleanup / registry
+        iso_map: Dict[tuple, str] = {}              # memboot: (dc, cl) -> datastore iso path
 
-        unique_cluster_keys = {}
+        unique_cluster_keys: Dict[tuple, Any] = {}
         for row in test_rows:
             ck = (row.datacenter, row.cluster)
             if ck not in unique_cluster_keys:
@@ -437,40 +447,57 @@ def provision_test_vms(
             datastore_obj_s = _find_datastore_in_dc(dc_obj_s, placement_s.datastore)
             if datastore_obj_s is None:
                 raise RuntimeError(f"Datastore not found: {placement_s.datastore} in {dc_name_s}")
-            resource_pool_s = _find_resource_pool(cluster_obj_s, str(args.resource_pool or ""))
-            if resource_pool_s is None:
-                raise RuntimeError(f"Resource pool not found in cluster {cl_name_s}")
-            vm_folder_s = _find_vm_folder(dc_obj_s, "", vim)
-            if vm_folder_s is None:
-                raise RuntimeError(f"VM root folder not found in {dc_name_s}")
 
-            seed_name = f"{args.vm_prefix}-{run_id}-seed-{cl_name_s.lower().replace(' ', '-')}"
-            logger.info(
-                "Deploying OVF seed VM '%s' for cluster %s (host=%s, ds=%s)...",
-                seed_name, cl_name_s, host_obj_s.name, datastore_obj_s.name,
-            )
+            if boot_method == "ovf":
+                resource_pool_s = _find_resource_pool(cluster_obj_s, str(args.resource_pool or ""))
+                if resource_pool_s is None:
+                    raise RuntimeError(f"Resource pool not found in cluster {cl_name_s}")
+                vm_folder_s = _find_vm_folder(dc_obj_s, "", vim)
+                if vm_folder_s is None:
+                    raise RuntimeError(f"VM root folder not found in {dc_name_s}")
 
-            # Use any accessible portgroup on this cluster for the seed NIC;
-            # each clone will have its NIC reconfigured to the correct VLAN.
-            first_bind_key = next(
-                (k for k in network_bindings if k[0] == dc_name_s and k[1] == cl_name_s),
-                None,
-            )
-            seed_dpg_key = network_bindings[first_bind_key].dpg_key if first_bind_key else ""
+                seed_name = f"{args.vm_prefix}-{run_id}-seed-{cl_name_s.lower().replace(' ', '-')}"
+                logger.info(
+                    "Deploying OVF seed VM '%s' for cluster %s (host=%s, ds=%s)...",
+                    seed_name, cl_name_s, host_obj_s.name, datastore_obj_s.name,
+                )
 
-            seed_vm_obj = deploy_ovf_vm(
-                si=si, content=content, vim=vim, ovf_path=ovf_path,
-                vm_name=seed_name, resource_pool=resource_pool_s,
-                datastore_obj=datastore_obj_s, vm_folder=vm_folder_s,
-                host_obj=host_obj_s, dpg_key=seed_dpg_key,
-            )
-            logger.info("Seed deployed: %s; taking snapshot...", seed_name)
-            snap_ref = take_vm_snapshot(vim, seed_vm_obj, snap_name="nettest-base")
-            logger.info("Snapshot taken on %s", seed_name)
+                # Use any accessible portgroup on this cluster for the seed NIC;
+                # each clone will have its NIC reconfigured to the correct VLAN.
+                first_bind_key = next(
+                    (k for k in network_bindings if k[0] == dc_name_s and k[1] == cl_name_s),
+                    None,
+                )
+                seed_dpg_key = network_bindings[first_bind_key].dpg_key if first_bind_key else ""
 
-            seed_vm_map[(dc_name_s, cl_name_s)]  = seed_vm_obj
-            seed_snap_map[(dc_name_s, cl_name_s)] = snap_ref
-            seed_vm_instances.append(seed_vm_obj)
+                seed_vm_obj = deploy_ovf_vm(
+                    si=si, content=content, vim=vim, ovf_path=ovf_path,
+                    vm_name=seed_name, resource_pool=resource_pool_s,
+                    datastore_obj=datastore_obj_s, vm_folder=vm_folder_s,
+                    host_obj=host_obj_s, dpg_key=seed_dpg_key,
+                )
+                logger.info("Seed deployed: %s; taking snapshot...", seed_name)
+                snap_ref = take_vm_snapshot(vim, seed_vm_obj, snap_name="nettest-base")
+                logger.info("Snapshot taken on %s", seed_name)
+
+                seed_vm_map[(dc_name_s, cl_name_s)]  = seed_vm_obj
+                seed_snap_map[(dc_name_s, cl_name_s)] = snap_ref
+                seed_vm_instances.append(seed_vm_obj)
+
+            elif boot_method == "memboot":
+                from nettest.memboot import ensure_iso_on_datastore
+                ds_iso_path = ensure_iso_on_datastore(
+                    si=si,
+                    vcenter_host=str(args.vcenter_host),
+                    datacenter_name=dc_name_s,
+                    datastore_name=datastore_obj_s.name,
+                    local_iso_path=memboot_iso_path,
+                )
+                iso_map[(dc_name_s, cl_name_s)] = ds_iso_path
+                logger.info(
+                    "Memboot ISO ready for cluster %s/%s: %s",
+                    dc_name_s, cl_name_s, ds_iso_path,
+                )
 
         for net_idx, (network_key, row) in enumerate(unique_networks.items()):
             dc_name, cl_name, vlan_id, subnet = network_key
@@ -558,12 +585,8 @@ def provision_test_vms(
 
             has_intra = any(per_vm_intra_targets)
 
-            # For intra-subnet probes, also flag VMs that are pure destinations.
-            # VMware Tools can report "running" before /etc/local.d/netprobe.start
-            # has finished configuring the network interface.  By making every
-            # intra-subnet participant (source OR destination) use ready=wait we
-            # guarantee that every VM is actively polling guestinfo — meaning its
-            # network config step has already completed — before any peer pings it.
+            # For intra-subnet probes also flag VMs that are pure destinations so
+            # every participant uses the two-phase ready-handshake.
             intra_dst_vm_indices: set = set()
             if has_intra and cases:
                 for case in cases:
@@ -571,34 +594,48 @@ def provision_test_vms(
                             and str(getattr(case, "dst_subnet", "")) == subnet):
                         intra_dst_vm_indices.add(int(getattr(case, "dst_vm_index", 0)))
 
-            # ── Phase 1: Deploy all VMs, write ALL targets before power-on ───
-            # Writing complete targets before boot eliminates any vmtoolsd
-            # read-cache race that would cause empty results.
-            # VMs with intra targets (source) or intra destination roles use
-            # ready=wait; pure cross-subnet VMs get ready=go immediately.
-            # Each VM is placed on a different host (round-robin by vm_idx).
-            vm_needs_wait: List[bool] = []
+            poll_method = str(getattr(args, "poll_method", "guestinfo"))
+
+            # ── Pre-compute serial / vsock resources for this subnet ───────────
+            # Serial: reserve one TCP port per VM before cloning so the port is
+            # known when we call add_serial_port_tcp (VM must be powered off).
+            serial_ports: List[int] = []
+            vsock_cids:   List[int] = []   # filled after power-on for vsock
+
+            if poll_method == "serial":
+                from nettest.serial_probe import SerialProbeServer, detect_controller_ip
+                _serial_server: Any = getattr(args, "_serial_server", None)
+                if _serial_server is None:
+                    raise RuntimeError("SerialProbeServer not initialised on args._serial_server")
+                for _ in range(max(1, vms_per_subnet)):
+                    serial_ports.append(_serial_server.alloc_port())
+
+            elif poll_method == "vsock":
+                from nettest.vsock_probe import VsockProbeServer
+                _vsock_server: Any = getattr(args, "_vsock_server", None)
+                if _vsock_server is None:
+                    raise RuntimeError("VsockProbeServer not initialised on args._vsock_server")
+
+            # ── Phase 1: Clone all VMs and attach probe devices ───────────────
+            # For guestinfo: write extraConfig before power-on (no vmtoolsd cache race).
+            # For serial/vsock: attach device, then power on (no extraConfig needed).
             subnet_vm_objs: List[Any] = []
+            vm_needs_wait:  List[bool] = []   # only meaningful for guestinfo mode
+
             for vm_idx in range(max(1, vms_per_subnet)):
                 alloc_ip      = alloc_ips[vm_idx]
                 vm_name       = f"{args.vm_prefix}-{run_id}-net-{net_idx:04d}-{vm_idx}"
                 intra_targets = per_vm_intra_targets[vm_idx]
                 cross_targets = per_vm_cross_targets[vm_idx]
                 all_targets   = intra_targets + cross_targets
-                # ready=wait: VM is an intra-subnet source OR destination.
-                # ready=go:   VM has no intra-subnet role at all.
-                is_intra_participant = bool(intra_targets) or (vm_idx in intra_dst_vm_indices)
-                ready_val = "wait" if (has_intra and is_intra_participant) else "go"
-                vm_needs_wait.append(ready_val == "wait")
+                is_intra_part = bool(intra_targets) or (vm_idx in intra_dst_vm_indices)
 
-                # Round-robin host selection: spread VMs across cluster hosts
+                # Round-robin host placement
                 host_obj_for_vm = avail_hosts[vm_idx % len(avail_hosts)]
-                # Pick accessible datastore on this specific host
                 datastore_obj_for_vm = None
                 if placement.datastore:
                     datastore_obj_for_vm = _find_datastore_in_dc(dc_obj, placement.datastore)
                 if datastore_obj_for_vm is None:
-                    # Fallback: any accessible datastore on this host
                     for ds in getattr(host_obj_for_vm, "datastore", []):
                         if getattr(getattr(ds, "summary", None), "accessible", False):
                             datastore_obj_for_vm = ds
@@ -608,86 +645,178 @@ def provision_test_vms(
                         f"No accessible datastore on host {host_obj_for_vm.name} in {cl_name}"
                     )
 
-                logger.info(
-                    "Cloning VM '%s' from seed (ip=%s, vm_idx=%s, host=%s, ds=%s)...",
-                    vm_name, alloc_ip, vm_idx, host_obj_for_vm.name, datastore_obj_for_vm.name,
-                )
-                seed_vm_obj = seed_vm_map[(dc_name, cl_name)]
-                seed_snap   = seed_snap_map[(dc_name, cl_name)]
-                vm_obj = clone_vm_linked(
-                    vim=vim, content=content,
-                    template_vm=seed_vm_obj, snapshot_ref=seed_snap,
-                    vm_name=vm_name, host_obj=host_obj_for_vm,
-                    datastore_obj=datastore_obj_for_vm,
-                    resource_pool=resource_pool, vm_folder=vm_folder,
-                    dpg_key=network_binding.dpg_key,
-                )
-                logger.info("Cloned: %s", vm_name)
+                if boot_method == "ovf":
+                    logger.info(
+                        "Cloning VM '%s' from seed (ip=%s, vm_idx=%s, host=%s, ds=%s)...",
+                        vm_name, alloc_ip, vm_idx, host_obj_for_vm.name, datastore_obj_for_vm.name,
+                    )
+                    seed_vm_obj_c = seed_vm_map[(dc_name, cl_name)]
+                    seed_snap_c   = seed_snap_map[(dc_name, cl_name)]
+                    vm_obj = clone_vm_linked(
+                        vim=vim, content=content,
+                        template_vm=seed_vm_obj_c, snapshot_ref=seed_snap_c,
+                        vm_name=vm_name, host_obj=host_obj_for_vm,
+                        datastore_obj=datastore_obj_for_vm,
+                        resource_pool=resource_pool, vm_folder=vm_folder,
+                        dpg_key=network_binding.dpg_key,
+                    )
+                    logger.info("Cloned: %s", vm_name)
 
-                write_probe_guestinfo(
-                    vim=vim, vm_obj=vm_obj,
-                    ip_address=alloc_ip, prefix_len=prefix_len, gateway=row.gw,
-                    targets=all_targets, ready=ready_val,
-                )
+                    # Attach probe device (ovf path only; memboot includes device in CreateVM_Task)
+                    if poll_method == "guestinfo":
+                        # Write probe config into extraConfig before power-on.
+                        ready_val = "wait" if (has_intra and is_intra_part) else "go"
+                        vm_needs_wait.append(ready_val == "wait")
+                        write_probe_guestinfo(
+                            vim=vim, vm_obj=vm_obj,
+                            ip_address=alloc_ip, prefix_len=prefix_len, gateway=row.gw,
+                            targets=all_targets, ready=ready_val,
+                        )
+
+                    elif poll_method == "serial":
+                        vm_needs_wait.append(False)  # serial uses protocol sync
+                        controller_ip = str(getattr(args, "serial_probe_host", "") or "")
+                        if not controller_ip:
+                            from nettest.serial_probe import detect_controller_ip
+                            controller_ip = detect_controller_ip(str(args.vcenter_host))
+                        add_serial_port_tcp(vim, vm_obj, controller_ip, serial_ports[vm_idx])
+
+                    elif poll_method == "vsock":
+                        vm_needs_wait.append(False)  # vsock uses protocol sync
+                        ensure_vmci_device(vim, vm_obj)
+
+                elif boot_method == "memboot":
+                    # create_memboot_vm handles serial port / VMCI device internally
+                    from nettest.memboot import create_memboot_vm
+                    _c_ip, _s_port = "", 0
+                    if poll_method == "serial":
+                        _c_ip = str(getattr(args, "serial_probe_host", "") or "")
+                        if not _c_ip:
+                            from nettest.serial_probe import detect_controller_ip
+                            _c_ip = detect_controller_ip(str(args.vcenter_host))
+                        _s_port = serial_ports[vm_idx]
+                    vm_obj = create_memboot_vm(
+                        vim=vim, content=content,
+                        vm_name=vm_name, host_obj=host_obj_for_vm,
+                        datastore_obj=datastore_obj_for_vm,
+                        resource_pool=resource_pool, vm_folder=vm_folder,
+                        dpg_key=network_binding.dpg_key,
+                        iso_ds_path=iso_map[(dc_name, cl_name)],
+                        poll_method=poll_method,
+                        controller_ip=_c_ip,
+                        serial_port=_s_port,
+                    )
+                    vm_needs_wait.append(False)  # memboot always uses protocol sync
+
                 wait_for_task(vm_obj.PowerOnVM_Task())
-                logger.info("Powered on: %s (ready=%s, host=%s)", vm_name, ready_val, host_obj_for_vm.name)
+                logger.info(
+                    "Powered on: %s (boot=%s, poll=%s, host=%s)",
+                    vm_name, boot_method, poll_method, host_obj_for_vm.name,
+                )
                 subnet_vm_objs.append(vm_obj)
 
-            # ── Phase 2: Wait for ALL VMs in this subnet to be tools-ready ───
-            vmtools_timeout = 300
+            # ── Phase 2 (guestinfo only): wait for VMware Tools ───────────────
             subnet_tools_ok: List[bool] = []
-            for vm_idx, vm_obj in enumerate(subnet_vm_objs):
-                vm_name = vm_obj.name
-                logger.info("Waiting for VMware Tools on %s (timeout=%ss)...", vm_name, vmtools_timeout)
-                tools_ok = _wait_for_vmtools(vm_obj, vmtools_timeout)
-                if not tools_ok:
-                    logger.warning("VMware Tools not ready on %s", vm_name)
-                else:
-                    logger.info("VMware Tools running on %s", vm_name)
-                subnet_tools_ok.append(tools_ok)
+            if poll_method == "guestinfo":
+                vmtools_timeout = 300
+                for vm_obj in subnet_vm_objs:
+                    logger.info("Waiting for VMware Tools on %s...", vm_obj.name)
+                    tools_ok = _wait_for_vmtools(vm_obj, vmtools_timeout)
+                    if not tools_ok:
+                        logger.warning("VMware Tools not ready on %s", vm_obj.name)
+                    else:
+                        logger.info("VMware Tools running on %s", vm_obj.name)
+                    subnet_tools_ok.append(tools_ok)
+            else:
+                # serial/vsock: no vmtools dependency — mark all as ready
+                subnet_tools_ok = [True] * len(subnet_vm_objs)
 
-            # ── Phase 3: Signal go to VMs that were held at ready=wait ────────
-            # Wait for ALL held VMs to reach status=waiting before sending go
-            # to ANY of them.  The VM sets status=waiting only after completing
-            # "ip addr add" + "ip link set up", so this guarantees every peer's
-            # network interface is fully configured before the first ping runs.
-            # VMware Tools can report guestToolsRunning well before init scripts
-            # execute, so waiting for Tools alone is insufficient.
-            for vm_idx, vm_obj in enumerate(subnet_vm_objs):
-                if vm_needs_wait[vm_idx]:
-                    logger.info(
-                        "Waiting for network-ready signal (status=waiting) on %s...",
-                        vm_obj.name,
-                    )
-                    ok = wait_for_probe_status(vm_obj, "waiting", timeout_sec=300)
-                    if not ok:
-                        logger.warning(
-                            "VM %s did not reach status=waiting in time; "
-                            "sending ready=go anyway (probe may fail)",
-                            vm_obj.name,
-                        )
-            for vm_idx, vm_obj in enumerate(subnet_vm_objs):
-                if vm_needs_wait[vm_idx]:
-                    logger.info("Setting ready=go for %s", vm_obj.name)
-                    write_probe_ready(vim=vim, vm_obj=vm_obj)
+            # ── Phase 3 (guestinfo only): two-phase ready handshake ───────────
+            if poll_method == "guestinfo":
+                for vm_idx, vm_obj in enumerate(subnet_vm_objs):
+                    if vm_needs_wait[vm_idx]:
+                        logger.info("Waiting for status=waiting on %s...", vm_obj.name)
+                        ok = wait_for_probe_status(vm_obj, "waiting", timeout_sec=300)
+                        if not ok:
+                            logger.warning(
+                                "VM %s did not reach status=waiting in time; "
+                                "sending ready=go anyway",
+                                vm_obj.name,
+                            )
+                for vm_idx, vm_obj in enumerate(subnet_vm_objs):
+                    if vm_needs_wait[vm_idx]:
+                        logger.info("Setting ready=go for %s", vm_obj.name)
+                        write_probe_ready(vim=vim, vm_obj=vm_obj)
 
-            # ── Phase 4: Poll each VM for probe results ────────────────────────
+            # ── Phase 3 (vsock only): collect VMCI CIDs after power-on ────────
+            if poll_method == "vsock":
+                for vm_obj in subnet_vm_objs:
+                    cid = get_vmci_cid(vm_obj)
+                    vsock_cids.append(cid if cid is not None else -1)
+                    logger.debug("VMCI CID for %s: %s", vm_obj.name, vsock_cids[-1])
+
+            # ── Phase 4: Collect probe results ────────────────────────────────
+            subnet_probe_results: List[Dict[str, str]] = [{} for _ in subnet_vm_objs]
+
+            if poll_method == "guestinfo":
+                for vm_idx, vm_obj in enumerate(subnet_vm_objs):
+                    vm_name     = vm_obj.name
+                    tools_ok    = subnet_tools_ok[vm_idx]
+                    all_targets = per_vm_intra_targets[vm_idx] + per_vm_cross_targets[vm_idx]
+                    if all_targets and tools_ok:
+                        logger.info("Polling probe results from %s...", vm_name)
+                        result = poll_probe_results(vm_obj, timeout_sec=180)
+                        if result is not None:
+                            subnet_probe_results[vm_idx] = result
+                            logger.info("Probe results: %s", result)
+                        else:
+                            logger.warning("No probe results from %s", vm_name)
+
+            elif poll_method == "serial":
+                _serial_server = getattr(args, "_serial_server")
+                configs = [
+                    {
+                        "port":    serial_ports[vi],
+                        "ip":      alloc_ips[vi],
+                        "prefix":  prefix_len,
+                        "gw":      row.gw,
+                        "targets": per_vm_intra_targets[vi] + per_vm_cross_targets[vi],
+                    }
+                    for vi in range(len(subnet_vm_objs))
+                ]
+                serial_results = _serial_server.run_subnet_probe(
+                    configs, sync=has_intra,
+                    connect_timeout=300, io_timeout=180,
+                )
+                for vi, sr in enumerate(serial_results):
+                    if sr["error"]:
+                        logger.warning("Serial probe error on vm_idx=%s: %s", vi, sr["error"])
+                    subnet_probe_results[vi] = sr["results"]
+
+            elif poll_method == "vsock":
+                _vsock_server = getattr(args, "_vsock_server")
+                configs = [
+                    {
+                        "cid":     vsock_cids[vi],
+                        "ip":      alloc_ips[vi],
+                        "prefix":  prefix_len,
+                        "gw":      row.gw,
+                        "targets": per_vm_intra_targets[vi] + per_vm_cross_targets[vi],
+                    }
+                    for vi in range(len(subnet_vm_objs))
+                ]
+                vsock_results = _vsock_server.run_subnet_probe(
+                    configs, sync=has_intra,
+                )
+                for vi, vr in enumerate(vsock_results):
+                    if vr["error"]:
+                        logger.warning("Vsock probe error on vm_idx=%s: %s", vi, vr["error"])
+                    subnet_probe_results[vi] = vr["results"]
+
+            # ── Assemble VMInstance records ───────────────────────────────────
             for vm_idx, vm_obj in enumerate(subnet_vm_objs):
                 alloc_ip = alloc_ips[vm_idx]
                 vm_name  = f"{args.vm_prefix}-{run_id}-net-{net_idx:04d}-{vm_idx}"
-                tools_ok = subnet_tools_ok[vm_idx]
-                all_targets = per_vm_intra_targets[vm_idx] + per_vm_cross_targets[vm_idx]
-
-                vm_probe_results: Dict[str, str] = {}
-                if all_targets and tools_ok:
-                    logger.info("Waiting for probe results from %s (timeout=180s)...", vm_name)
-                    result = poll_probe_results(vm_obj, timeout_sec=180)
-                    if result is not None:
-                        vm_probe_results = result
-                        logger.info("Probe results: %s", vm_probe_results)
-                    else:
-                        logger.warning("No probe results received from %s", vm_name)
-
                 instances.append(
                     VMInstance(
                         datacenter=dc_name,
@@ -701,8 +830,8 @@ def provision_test_vms(
                         dpg_name=network_binding.dpg_name,
                         selection_policy=network_binding.resolution_policy,
                         base_iso_path="",
-                        vmtools_ready=tools_ok,
-                        probe_results=vm_probe_results,
+                        vmtools_ready=subnet_tools_ok[vm_idx],
+                        probe_results=subnet_probe_results[vm_idx],
                     )
                 )
                 logger.info("Created %s (moid=%s, ip=%s) on VLAN %s vm_idx=%s",

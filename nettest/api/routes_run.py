@@ -35,6 +35,14 @@ class RunIn(BaseModel):
     max_vms_per_phase: int = 20
     phases: str = ""           # comma-separated phase IDs, empty = all
     vrf_links: List[str] = []  # "FROM:TO" or "FROM:TO:FAIL"
+    # Probe communication channel (guestinfo | serial | vsock)
+    poll_method: str = "guestinfo"
+    serial_probe_host: str = ""
+    serial_base_port: int = 10000
+    vsock_base_port: int = 9000
+    # VM boot method (ovf | memboot)
+    boot_method: str = "ovf"
+    memboot_iso_path: str = ""
 
 
 @router.post("/api/run")
@@ -66,6 +74,12 @@ def api_start_run(req: RunIn, x_vcenter_session: str = Header(default="")):
                 max_vms_per_phase=req.max_vms_per_phase,
                 phases=req.phases,
                 vrf_links=list(req.vrf_links),
+                poll_method=req.poll_method,
+                serial_probe_host=req.serial_probe_host,
+                serial_base_port=req.serial_base_port,
+                vsock_base_port=req.vsock_base_port,
+                boot_method=req.boot_method,
+                memboot_iso_path=req.memboot_iso_path,
                 vcenter_host=vc_host,
                 vcenter_user=vc_user,
                 vcenter_password=vc_pass,

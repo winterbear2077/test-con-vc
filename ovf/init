@@ -1,0 +1,26 @@
+#!/bin/sh
+# /init — PID 1 inside the nettest mini-ISO initramfs.
+#
+# Mounts essential filesystems, loads VMware vmci/vsock modules when present,
+# then execs netprobe which owns the rest of the boot (networking + probe protocol).
+
+mount -t proc     proc     /proc
+mount -t sysfs    sysfs    /sys
+mount -t devtmpfs devtmpfs /dev 2>/dev/null \
+    || mount -t tmpfs tmpfs /dev
+
+# Minimal device nodes (fallback when devtmpfs is unavailable)
+[ -c /dev/null ]  || mknod -m 666 /dev/null  c 1 3
+[ -c /dev/ttyS0 ] || mknod -m 660 /dev/ttyS0 c 4 64
+
+mkdir -p /dev/pts
+mount -t devpts devpts /dev/pts 2>/dev/null || true
+
+# Load VMware vmci/vsock modules so vsock poll_method is available.
+# Non-fatal — serial mode works without them.
+for mod in vmw_vmci vsock vmw_vsock_vmci_transport; do
+    ko="/lib/modules/${mod}.ko"
+    [ -f "$ko" ] && insmod "$ko" 2>/dev/null || true
+done
+
+exec /usr/local/bin/netprobe
