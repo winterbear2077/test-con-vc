@@ -54,8 +54,14 @@ fn main() {
             let mut writer = BufWriter::new(serial);
             run_probe_protocol(&mut *logf, &mut reader, &mut writer)
         })();
-        finish(logf, result);
-        return;
+        match result {
+            Ok(()) => { finish(logf, Ok(())); return; }
+            Err(ref e) => {
+                log(&mut *logf, &format!("  serial failed ({}), trying next channel", e));
+                // /dev/ttyS0 is always present as a char device even when not
+                // connected; fall through to vsock / guestinfo.
+            }
+        }
     }
 
     // ── Channel 2: vsock ──────────────────────────────────────────────────────
@@ -75,7 +81,8 @@ fn main() {
 
     // ── Channel 3: guestinfo (vmtoolsd) ──────────────────────────────────────
     let has_vmtoolsd = std::path::Path::new("/usr/bin/vmtoolsd").exists()
-        || std::path::Path::new("/usr/local/bin/vmtoolsd").exists();
+        || std::path::Path::new("/usr/local/bin/vmtoolsd").exists()
+        || std::path::Path::new("/usr/sbin/vmtoolsd").exists();
 
     if has_vmtoolsd {
         log(&mut *logf, "  Channel: guestinfo (vmtoolsd)");

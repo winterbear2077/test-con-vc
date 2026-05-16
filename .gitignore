@@ -9,6 +9,8 @@ venv/
 # Build output
 build/
 dist/
+target/
+Cargo.lock
 
 # Artifacts / test run output
 artifacts/
