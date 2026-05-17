@@ -81,7 +81,9 @@ def ensure_iso_on_datastore(
     ds_path  = f"[{datastore_name}] {remote_dir}/{iso_name}"
     url      = _ds_path_to_url(vcenter_host, datacenter_name, ds_path)
 
-    session_key = str(si.content.sessionManager.currentSession.key)
+    # Extract the cookie from the SOAP stub — this includes proper quoting
+    # (e.g. vmware_soap_session="<key>") required by vSphere 7.x+.
+    soap_cookie = si._stub.cookie.split(";")[0].strip()
     file_size   = os.path.getsize(local_iso_path)
 
     logger.info(
@@ -96,7 +98,7 @@ def ensure_iso_on_datastore(
             headers={
                 "Content-Type":   "application/octet-stream",
                 "Content-Length": str(file_size),
-                "Cookie":         f"vmware_soap_session={session_key}",
+                "Cookie":         soap_cookie,
                 "Overwrite":      "t",
             },
         )
