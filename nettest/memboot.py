@@ -169,7 +169,6 @@ def create_memboot_vm(
     sata = vim.vm.device.VirtualAHCIController()
     sata.key           = next_key; next_key -= 1
     sata.busNumber     = 0
-    sata.sharedBus     = vim.vm.device.VirtualSCSIController.Sharing.noSharing
     sata_spec          = vim.vm.device.VirtualDeviceSpec()
     sata_spec.operation = vim.vm.device.VirtualDeviceSpec.Operation.add
     sata_spec.device   = sata
