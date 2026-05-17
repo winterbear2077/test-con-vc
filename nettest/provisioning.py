@@ -387,7 +387,7 @@ def provision_test_vms(
             unique_networks[network_key] = row
 
     root_pw = "nettest-alpine"
-    boot_method = str(getattr(args, "boot_method", "ovf") or "ovf")
+    boot_method = str(getattr(args, "boot_method", "memboot") or "memboot")
 
     if boot_method == "ovf":
         ovf_path = str(getattr(args, "ovf_path", "") or "")

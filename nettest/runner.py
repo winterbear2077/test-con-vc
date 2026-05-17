@@ -75,9 +75,9 @@ class RunConfig:
         # vsock port the guest connects to on VMADDR_CID_HOST (CID=2)
         vsock_base_port: int = 9000,
         # ── VM boot method ────────────────────────────────────────────────────
-        # "ovf": deploy OVF seed VM per cluster + linked clones (default)
-        # "memboot": diskless Alpine ISO boot, no VMDK at all
-        boot_method: str = "ovf",
+        # "memboot": diskless mini ISO boot, no VMDK at all (default)
+        # "ovf": deploy OVF seed VM per cluster + linked clones (legacy)
+        boot_method: str = "memboot",
         # local ISO path (or pre-staged "[ds] path" string) for boot_method=memboot
         memboot_iso_path: str = "",
     ):

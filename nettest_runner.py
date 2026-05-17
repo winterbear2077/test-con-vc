@@ -111,10 +111,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--boot-method",
         choices=["ovf", "memboot"],
-        default="ovf",
+        default="memboot",
         help="VM boot method: "
-             "ovf (deploy OVF seed VM per cluster + linked clones, default), "
-             "memboot (diskless mini ISO boot — no VMDK, ~13 MB ISO uploaded once per cluster)",
+             "memboot (diskless mini ISO boot — no VMDK, ~13 MB ISO uploaded once per cluster — default), "
+             "ovf (deploy OVF seed VM per cluster + linked clones)",
     )
     parser.add_argument(
         "--memboot-iso-path", default="",
@@ -181,7 +181,7 @@ def run() -> int:
         serial_probe_host=_get("serial_probe_host", ""),
         serial_base_port=_get("serial_base_port", 10000),
         vsock_base_port=_get("vsock_base_port", 9000),
-        boot_method=_get("boot_method", "ovf"),
+        boot_method=_get("boot_method", "memboot"),
         memboot_iso_path=_get("memboot_iso_path", ""),
     )
 

@@ -41,7 +41,7 @@ class RunIn(BaseModel):
     serial_base_port: int = 10000
     vsock_base_port: int = 9000
     # VM boot method (ovf | memboot)
-    boot_method: str = "ovf"
+    boot_method: str = "memboot"
     memboot_iso_path: str = ""
 
 
