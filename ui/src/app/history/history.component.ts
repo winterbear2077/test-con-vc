@@ -72,11 +72,11 @@ export class HistoryComponent implements OnInit {
   }
 
   cleanup(run: HistoryEntry) {
-    if (run.vms_cleaned) return;
+    if (run.cleaned) return;
     if (!confirm('Delete all test VMs for run ' + run.run_id + '?')) return;
     this.cleaningId = run.run_id;
     this.api.cleanupRun(run.run_id).subscribe({
-      next: () => { run.vms_cleaned = 1; this.cleaningId = null; },
+      next: () => { run.cleaned = 1; run.vms_cleaned = 1; this.cleaningId = null; },
       error: err => { this.cleanErrMsg[run.run_id] = '\u2717 ' + (err.error?.detail || err.message); this.cleaningId = null; }
     });
   }

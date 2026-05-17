@@ -117,6 +117,8 @@ def finish_run(run_id: str, result: dict) -> None:
                 run_id,  # run_id is already a timestamp string; use as created_at fallback
             ),
         )
+    if result.get("Plan", {}).get("probe_mode") == "dry-run":
+        mark_cleaned(run_id)
 
 
 def finish_run_error(run_id: str, detail: "dict | str") -> None:
@@ -142,7 +144,8 @@ def get_history(limit: int = 100) -> list[dict]:
     with _connect() as con:
         rows = con.execute(
             """SELECT r.run_id, r.status, r.probe_mode, r.total, r.passed, r.failed,
-                      COALESCE(co.cleaned, 0) AS vms_cleaned
+                      CASE WHEN r.probe_mode = 'dry-run' THEN 1 ELSE COALESCE(co.cleaned, 0) END AS cleaned,
+                      CASE WHEN r.probe_mode = 'dry-run' THEN 1 ELSE COALESCE(co.cleaned, 0) END AS vms_cleaned
                FROM runs r
                LEFT JOIN created_objects co ON co.run_id = r.run_id
                ORDER BY r.created_at DESC LIMIT ?""",
@@ -200,7 +203,9 @@ def mark_cleaned(run_id: str) -> None:
     """Mark a run's VMs as cleaned so cleanup cannot be triggered again."""
     with _lock, _connect() as con:
         con.execute(
-            "UPDATE created_objects SET cleaned=1 WHERE run_id=?",
+            """INSERT INTO created_objects (run_id, cleaned)
+               VALUES (?, 1)
+               ON CONFLICT(run_id) DO UPDATE SET cleaned=1""",
             (run_id,),
         )
 

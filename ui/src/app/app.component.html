@@ -29,21 +29,11 @@
       </section>
     </nav>
     <div class="content-area">
-      @if (activeTab==='config') {
-        <app-config (navigate)="navTo($event)"></app-config>
-      }
-      @if (activeTab==='input') {
-        <app-input-networks></app-input-networks>
-      }
-      @if (activeTab==='rules') {
-        <app-vrf-rules></app-vrf-rules>
-      }
-      @if (activeTab==='run') {
-        <app-run-test></app-run-test>
-      }
-      @if (activeTab==='history') {
-        <app-history (navigate)="navTo($event)"></app-history>
-      }
+      <app-config [hidden]="activeTab!=='config'" (navigate)="navTo($event)"></app-config>
+      <app-input-networks [hidden]="activeTab!=='input'"></app-input-networks>
+      <app-vrf-rules [hidden]="activeTab!=='rules'"></app-vrf-rules>
+      <app-run-test [hidden]="activeTab!=='run'"></app-run-test>
+      <app-history [hidden]="activeTab!=='history'" (navigate)="navTo($event)"></app-history>
     </div>
   </div>
 </clr-main-container>
