@@ -143,7 +143,7 @@ export class InputNetworksComponent implements OnInit {
     const pgs = this.inventory?.portgroups?.[dc]?.[cluster] || [];
     return pgs.map(p => {
       const hasVlan = p.vlan && p.vlan !== '0';
-      return { name: p.name, vlan: hasVlan ? p.vlan : '', label: hasVlan ? p.name + '  [VLAN ' + p.vlan + ']' : p.name };
+      return { name: p.name, vlan: hasVlan ? p.vlan : '', label: hasVlan ? p.name + ' [' + p.vlan + ']' : p.name };
     });
   }
 }
