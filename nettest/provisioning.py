@@ -325,6 +325,7 @@ def provision_test_vms(
     cases: Optional[List[Any]] = None,  # TestCase list for building per-VM target lists
     gateway_by_subnet: Optional[Dict[str, str]] = None,  # subnet -> gateway IP
     vms_per_subnet: int = 1,  # how many VMs to create per subnet row
+    on_vm_created: Optional[Any] = None,  # callable(moid: str) — called immediately after each VM is created
 ) -> List[VMInstance]:
     """
     Provision test VMs for each unique network (VLAN/subnet/cluster).
@@ -836,6 +837,8 @@ def provision_test_vms(
                 )
                 logger.info("Created %s (moid=%s, ip=%s) on VLAN %s vm_idx=%s",
                             vm_name, instances[-1].moid, alloc_ip, vlan_id, vm_idx)
+                if on_vm_created:
+                    on_vm_created(instances[-1].moid)
 
         # Append seed VMs at the end so the runner can clean them up last.
         # They are marked with a special dpg_name so callers can distinguish.
@@ -857,6 +860,8 @@ def provision_test_vms(
                     probe_results={},
                 )
             )
+            if on_vm_created:
+                on_vm_created(instances[-1].moid)
 
     return instances
 

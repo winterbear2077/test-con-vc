@@ -38,10 +38,10 @@
           <td [class.text-danger]="r.failed">{{ r.failed || '&mdash;' }}</td>
           <td class="text-muted">{{ r.total }}</td>
           <td (click)="$event.stopPropagation()">
-            <span class="p7 text-muted" *ngIf="cleanMsg[r.run_id]" style="margin-right:6px;font-size:.7rem">{{ cleanMsg[r.run_id] }}</span>
-            <button class="btn btn-icon btn-sm btn-link" (click)="cleanup(r.run_id)" [disabled]="cleaningId === r.run_id || deletingId === r.run_id" title="Delete test VMs">
+            <button class="btn btn-icon btn-sm btn-link" (click)="cleanup(r.run_id)" [disabled]="cleaningId === r.run_id || deletingId === r.run_id" [title]="cleanedIds.has(r.run_id) ? 'VMs deleted' : 'Delete test VMs'">
               <clr-spinner *ngIf="cleaningId===r.run_id" clrInline></clr-spinner>
-              <clr-icon *ngIf="cleaningId!==r.run_id" shape="vm" style="color:#c92100"></clr-icon>
+              <clr-icon *ngIf="cleaningId!==r.run_id && !cleanedIds.has(r.run_id)" shape="vm" style="color:#c92100"></clr-icon>
+              <clr-icon *ngIf="cleaningId!==r.run_id && cleanedIds.has(r.run_id)" shape="check-circle" style="color:#1d7a0a"></clr-icon>
             </button>
             <button *ngIf="devMode" class="btn btn-icon btn-sm btn-link" (click)="deleteRecord(r.run_id)" [disabled]="deletingId === r.run_id || cleaningId === r.run_id" title="Remove from history">
               <clr-spinner *ngIf="deletingId===r.run_id" clrInline></clr-spinner>

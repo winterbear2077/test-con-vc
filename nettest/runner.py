@@ -237,14 +237,19 @@ def execute_run(
                 phase_vm_instances: List = []
                 if cfg.probe_mode in ("in-guest", "in-guest-ping") and phase_rows:
                     logger.info("Provisioning %s VMs for phase...", len(phase_rows) * phase.vms_per_subnet)
+
+                    def _on_vm_created_phase(moid: str) -> None:
+                        created_registry["vms"].append(moid)
+                        all_vm_instances_ref = all_vm_instances  # noqa: F841 captured by closure
+                        _persist_registry()
+
                     phase_vm_instances = provision_test_vms(
                         phase_rows, placements_dict, bindings_dict, cfg, cfg.run_id,
                         cases=phase.cases, gateway_by_subnet=gateway_by_subnet,
                         vms_per_subnet=phase.vms_per_subnet,
+                        on_vm_created=_on_vm_created_phase,
                     )
                     all_vm_instances.extend(phase_vm_instances)
-                    created_registry["vms"].extend(vm.moid for vm in phase_vm_instances)
-                    _persist_registry()
                     logger.info("Provisioned %s VMs", len(phase_vm_instances))
 
                 phase_results = run_icmp_checks(
@@ -289,14 +294,18 @@ def execute_run(
                 vm_rows = [r for r in accepted if r.mode == "vm-provisioned"]
                 if vm_rows:
                     logger.info("Provisioning test VMs...")
+
+                    def _on_vm_created(moid: str) -> None:
+                        created_registry["vms"].append(moid)
+                        _persist_registry()
+
                     vm_instances = provision_test_vms(
                         vm_rows, placements_dict, bindings_dict, cfg, cfg.run_id,
                         cases=cases, gateway_by_subnet=gateway_by_subnet,
                         vms_per_subnet=cfg.vms_per_subnet,
+                        on_vm_created=_on_vm_created,
                     )
                     all_vm_instances.extend(vm_instances)
-                    created_registry["vms"].extend(vm.moid for vm in vm_instances)
-                    _persist_registry()
                     logger.info("Provisioned %s test VMs", len(vm_instances))
 
             current_cases: List[TestCase] = list(cases)

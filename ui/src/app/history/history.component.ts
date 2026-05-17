@@ -18,7 +18,8 @@ export class HistoryComponent implements OnInit {
   loading = false;
   error = '';
   cleaningId: string | null = null;
-  cleanMsg: Record<string, string> = {};
+  cleanedIds = new Set<string>();
+  cleanErrMsg: Record<string, string> = {};
   deletingId: string | null = null;
   readonly devMode = isDevMode();
 
@@ -75,8 +76,8 @@ export class HistoryComponent implements OnInit {
     if (!confirm('Delete all test VMs for run ' + runId + '?')) return;
     this.cleaningId = runId;
     this.api.cleanupRun(runId).subscribe({
-      next: r => { this.cleanMsg[runId] = 'Cleaned ' + r.cleaned + ', skipped ' + r.skipped + ', failed ' + r.failed; this.cleaningId = null; },
-      error: err => { this.cleanMsg[runId] = '\u2717 ' + (err.error?.detail || err.message); this.cleaningId = null; }
+      next: () => { this.cleanedIds.add(runId); this.cleaningId = null; },
+      error: err => { this.cleanErrMsg[runId] = '\u2717 ' + (err.error?.detail || err.message); this.cleaningId = null; }
     });
   }
 
@@ -89,7 +90,7 @@ export class HistoryComponent implements OnInit {
         if (this.selectedRunId === runId) { this.selectedRunId = null; this.selectedResult = null; }
         this.deletingId = null;
       },
-      error: err => { this.cleanMsg[runId] = '\u2717 ' + (err.error?.detail || err.message); this.deletingId = null; }
+      error: err => { this.cleanErrMsg[runId] = '\u2717 ' + (err.error?.detail || err.message); this.deletingId = null; }
     });
   }
 
