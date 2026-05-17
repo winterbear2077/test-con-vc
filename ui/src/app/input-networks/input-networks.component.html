@@ -58,7 +58,6 @@
                   <option value="">— Portgroup —</option>
                   <option *ngFor="let pg of pgOptions(row.datacenter || '', row.cluster || '')" [value]="pg.name">{{ pg.label }}</option>
                 </select>
-                <span *ngIf="row.vlan" class="label label-light-blue" style="margin-left:4px;font-size:.68rem">VLAN {{ row.vlan }}</span>
               </ng-container>
               <ng-container *ngIf="!inventory || !pgOptions(row.datacenter || '', row.cluster || '').length">
                 <input type="text" class="clr-input" [(ngModel)]="row['pg']" placeholder="portgroup" style="width:130px" />
