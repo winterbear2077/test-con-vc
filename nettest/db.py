@@ -119,6 +119,8 @@ def finish_run_error(run_id: str, detail: "dict | str") -> None:
             detail = json.loads(detail)
         except Exception:
             detail = {"error": detail}
+    if not isinstance(detail, dict):
+        detail = {"error": str(detail)}
     error_result = json.dumps({"FinalStatus": "error", **detail}, ensure_ascii=False)
     with _lock, _connect() as con:
         con.execute(

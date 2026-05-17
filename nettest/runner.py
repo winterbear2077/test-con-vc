@@ -196,13 +196,14 @@ def execute_run(
             if cfg.poll_method == "serial":
                 from nettest.serial_probe import SerialProbeServer, detect_controller_ip
                 host = cfg.serial_probe_host or detect_controller_ip(cfg.vcenter_host)
-                _serial_srv = SerialProbeServer(host=host, base_port=cfg.serial_base_port)
+                _serial_srv = SerialProbeServer(server_ip=host, base_port=cfg.serial_base_port)
                 cfg._serial_server = _serial_srv  # type: ignore[attr-defined]
                 logger.info("SerialProbeServer listening on %s starting from port %s",
                             host, cfg.serial_base_port)
             elif cfg.poll_method == "vsock":
                 from nettest.vsock_probe import VsockProbeServer
                 _vsock_srv = VsockProbeServer(port=cfg.vsock_base_port)
+                _vsock_srv.start()
                 cfg._vsock_server = _vsock_srv  # type: ignore[attr-defined]
                 logger.info("VsockProbeServer listening on vsock port %s", cfg.vsock_base_port)
 
@@ -257,6 +258,7 @@ def execute_run(
                     guest_ssh_user="root",
                     guest_ssh_password=effective_guest_ssh_password,
                     vcenter_si=vcenter_si,
+                    poll_method=cfg.poll_method,
                 )
                 all_results = merge_retry_results(all_results, phase_results)
 
@@ -313,6 +315,7 @@ def execute_run(
                     guest_ssh_user="root",
                     guest_ssh_password=effective_guest_ssh_password,
                     vcenter_si=vcenter_si,
+                    poll_method=cfg.poll_method,
                 )
                 all_results = merge_retry_results(all_results, attempt_results)
                 failed = [r for r in all_results if r.status != "pass"]
@@ -333,6 +336,9 @@ def execute_run(
 
         failed_results = [r for r in all_results if r.status != "pass"]
         success = len(failed_results) == 0
+
+        if _vsock_srv is not None:
+            _vsock_srv.stop()
 
         result_payload = {
             "Plan": {

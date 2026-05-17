@@ -139,6 +139,7 @@ def run_icmp_checks(
     guest_ssh_user: str = "root",
     guest_ssh_password: str = "",
     vcenter_si: Any = None,
+    poll_method: str = "guestinfo",
 ) -> List[TestResult]:
     """Execute ICMP connectivity checks using the specified probe mode.
 
@@ -153,6 +154,7 @@ def run_icmp_checks(
         guest_ssh_user: Guest OS username.
         guest_ssh_password: Guest OS password.
         vcenter_si: Open pyVmomi ServiceInstance; required for Guest Ops probe.
+        poll_method: Communication channel used (guestinfo/serial/vsock) — affects reason codes.
 
     Returns:
         List of TestResult objects.
@@ -326,11 +328,12 @@ def run_icmp_checks(
                     ok = True
                 elif result_str == "FAIL":
                     ok = False
-                probe_reason = "guestinfo-icmp-from-src-vm"
+                probe_reason = f"{poll_method}-icmp-from-src-vm"
 
             # Fallback: Guest Ops ICMP when guestinfo gave no result.
             # SSH is not used (not available on the Alpine OVF build).
-            if ok is None and use_guest_ops:
+            # Serial/vsock channels deliver results directly; no fallback needed.
+            if ok is None and use_guest_ops and poll_method == "guestinfo":
                 vm_obj = _find_vm_by_moid(vcenter_si, src_vm.moid)
                 if vm_obj is not None:
                     ok = _guest_ops_ping(
