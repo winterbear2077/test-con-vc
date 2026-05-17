@@ -24,7 +24,11 @@ export class InputNetworksComponent implements OnInit {
 
   ngOnInit() {
     this.load();
-    this.syncInventory();   // auto-trigger on page enter
+    // Only auto-fetch if credentials are already available (plugin session or saved session token).
+    // Otherwise the user must save the config first, then click Sync manually.
+    if (this.api.hasAuth()) {
+      this.syncInventory();
+    }
   }
 
   load() {

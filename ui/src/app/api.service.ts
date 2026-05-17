@@ -1,6 +1,6 @@
 import { Injectable } from '@angular/core';
 import { HttpClient, HttpHeaders, HttpParams } from '@angular/common/http';
-import { Observable } from 'rxjs';
+import { Observable, map, switchMap, tap } from 'rxjs';
 import { PluginContextService } from './plugin-context.service';
 
 export interface AppConfig {
@@ -90,16 +90,55 @@ export class ApiService {
     this.absBase = base + '/api';
   }
 
-  /** Returns headers including X-Vcenter-Session when in plugin mode and session is available. */
-  private sessionHeaders(): { headers?: HttpHeaders } {
-    if (this.plugin.isPlugin && this.plugin.sessionId) {
-      return { headers: new HttpHeaders({ 'X-Vcenter-Session': this.plugin.sessionId }) };
-    }
-    return {};
+  /** True when vCenter credentials are available (plugin session OR saved session token). */
+  hasAuth(): boolean {
+    return (this.plugin.isPlugin && !!this.plugin.sessionId) ||
+           !!sessionStorage.getItem('vcenter_session_token');
   }
 
-  getConfig(): Observable<AppConfig> { return this.http.get<AppConfig>(this.base + '/config'); }
-  saveConfig(c: AppConfig): Observable<any> { return this.http.put<any>(this.base + '/config', c); }
+  /**
+   * Returns auth headers for vCenter API calls:
+   * - X-Vcenter-Session + X-Vcenter-Host in plugin mode
+   * - X-Session-Token (opaque, not the password) in standalone mode
+   */
+  private authHeaders(): { headers?: HttpHeaders } {
+    const h: Record<string, string> = {};
+    if (this.plugin.isPlugin && this.plugin.sessionId) {
+      h['X-Vcenter-Session'] = this.plugin.sessionId;
+      if (this.plugin.vcenterHost) h['X-Vcenter-Host'] = this.plugin.vcenterHost;
+    }
+    const token = sessionStorage.getItem('vcenter_session_token');
+    if (token) h['X-Session-Token'] = token;
+    return Object.keys(h).length ? { headers: new HttpHeaders(h) } : {};
+  }
+
+  /** Fetch config from server (password is never returned; enter it fresh each session). */
+  getConfig(): Observable<AppConfig> {
+    return this.http.get<AppConfig>(this.base + '/config');
+  }
+
+  /**
+   * Save config. If a password is provided it is exchanged for a server-side session
+   * token stored in sessionStorage — the password itself is never sent beyond this call.
+   */
+  saveConfig(c: AppConfig): Observable<any> {
+    const password = c.vcenter_password || '';
+    const safe: AppConfig = { ...c };
+    delete safe['vcenter_password'];
+    const save$ = this.http.put<any>(this.base + '/config', safe);
+    if (!password) return save$;
+    return save$.pipe(
+      switchMap(() =>
+        this.http.post<{ session_token: string }>(this.base + '/session', { vcenter_password: password })
+      ),
+      tap(r => {
+        const old = sessionStorage.getItem('vcenter_session_token');
+        if (old) this.http.delete(this.base + '/session/' + old).subscribe();
+        sessionStorage.setItem('vcenter_session_token', r.session_token);
+      }),
+      map(() => ({ ok: true }))
+    );
+  }
 
   uploadOvf(files: FileList): Observable<{ path: string }> {
     const fd = new FormData();
@@ -128,7 +167,7 @@ export class ApiService {
   getInput(): Observable<{ rows: NetworkRow[] }> { return this.http.get<{ rows: NetworkRow[] }>(this.base + '/input'); }
   saveInput(rows: NetworkRow[]): Observable<any> { return this.http.put<any>(this.base + '/input', { rows }); }
 
-  getInventory(): Observable<VcInventory> { return this.http.get<VcInventory>(this.base + '/vcenter/inventory', this.sessionHeaders()); }
+  getInventory(): Observable<VcInventory> { return this.http.get<VcInventory>(this.base + '/vcenter/inventory', this.authHeaders()); }
 
   getPluginStatus(key: string): Observable<PluginStatus> {
     return this.http.get<PluginStatus>(this.base + '/vcenter/plugin/status', { params: new HttpParams().set('key', key) });
@@ -139,15 +178,15 @@ export class ApiService {
   }
 
   registerPlugin(req: { plugin_url: string; plugin_key: string; ssl_thumbprint: string }): Observable<any> {
-    return this.http.post<any>(this.base + '/vcenter/plugin/register', req);
+    return this.http.post<any>(this.base + '/vcenter/plugin/register', req, this.authHeaders());
   }
 
   unregisterPlugin(key: string): Observable<any> {
-    return this.http.post<any>(this.base + '/vcenter/plugin/unregister', { key });
+    return this.http.post<any>(this.base + '/vcenter/plugin/unregister', { key }, this.authHeaders());
   }
 
   startRun(req: RunRequest): Observable<{ run_id: string }> {
-    return this.http.post<{ run_id: string }>(this.base + '/run', req, this.sessionHeaders());
+    return this.http.post<{ run_id: string }>(this.base + '/run', req, this.authHeaders());
   }
 
   /** Returns the absolute URL to use with EventSource (must be absolute to work in vCenter iframes). */
@@ -163,7 +202,7 @@ export class ApiService {
   deleteHistory(runId: string): Observable<{ ok: boolean }> { return this.http.delete<{ ok: boolean }>(this.base + '/history/' + runId); }
 
   cleanupRun(runId: string): Observable<{ cleaned: number; skipped: number; failed: number }> {
-    return this.http.post<any>(this.base + '/run/' + runId + '/cleanup', {});
+    return this.http.post<any>(this.base + '/run/' + runId + '/cleanup', {}, this.authHeaders());
   }
 
   getVrfRules(): Observable<{ rules: VrfRuleRow[] }> {

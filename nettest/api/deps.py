@@ -4,10 +4,13 @@ from __future__ import annotations
 import csv
 import ipaddress
 import json
+import secrets
+import time as _time
 from pathlib import Path
 from typing import Dict, List, Tuple
 
 import nettest.db as _db
+from nettest.db import SENSITIVE_CONFIG_KEYS
 from nettest.paths import get_workspace, get_static_dir
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
@@ -19,16 +22,47 @@ STATIC_DIR  = get_static_dir()
 # ── Active run registry: run_id -> {queue, returncode, pid} ───────────────────
 _runs: Dict[str, dict] = {}
 
+# ── Server-side session store: token → {password, exp} ───────────────────────
+# Password is exchanged once for an opaque token; the token expires after TTL.
+_sessions: dict[str, dict] = {}
+_SESSION_TTL_SECS = 28800  # 8 hours
+
+
+def create_session(password: str) -> str:
+    """Store password under a new random token; return the token."""
+    token = secrets.token_urlsafe(32)
+    _sessions[token] = {"password": password, "exp": _time.monotonic() + _SESSION_TTL_SECS}
+    return token
+
+
+def get_session_password(token: str) -> str:
+    """Return the password for a valid, non-expired token, or '' otherwise."""
+    if not token:
+        return ""
+    s = _sessions.get(token)
+    if not s:
+        return ""
+    if _time.monotonic() > s["exp"]:
+        _sessions.pop(token, None)
+        return ""
+    return s.get("password", "")
+
+
+def revoke_session(token: str) -> None:
+    """Delete a session token immediately."""
+    _sessions.pop(token, None)
+
 
 # ── Config helpers ────────────────────────────────────────────────────────────
 def _read_config() -> dict:
-    """Read config from SQLite only. Seeded at startup by migrate_config_from_file."""
+    """Read config from SQLite. Password is never stored here; it arrives via request header."""
     return _db.get_config()
 
 
 def _write_config(data: dict) -> None:
-    """Persist config to SQLite only. nettest.config.json is read-only static config."""
-    _db.save_config(data)
+    """Persist config to SQLite, silently dropping any sensitive fields (defense-in-depth)."""
+    safe = {k: v for k, v in data.items() if k not in SENSITIVE_CONFIG_KEYS}
+    _db.save_config(safe)
 
 
 # ── Input helpers ─────────────────────────────────────────────────────────────

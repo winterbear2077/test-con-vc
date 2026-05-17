@@ -11,7 +11,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from nettest.vcenter_utils import connect_vcenter_auto, disconnect_vcenter
-from nettest.api.deps import _read_config, _write_config
+from nettest.api.deps import _read_config, _write_config, get_session_password
 
 router = APIRouter()
 
@@ -22,7 +22,7 @@ _PLUGIN_VERSION = "1.0.0"
 
 # ── vCenter Inventory ─────────────────────────────────────────────────────────
 @router.get("/api/vcenter/inventory")
-def api_vcenter_inventory(x_vcenter_session: str | None = Header(default=None)):
+def api_vcenter_inventory(x_vcenter_session: str | None = Header(default=None), x_session_token: str = Header(default="")):
     """Return datacenters, clusters, and distributed/standard portgroups from vCenter."""
     cfg = _read_config()
     host = str(cfg.get("vcenter_host", "")).strip()
@@ -40,7 +40,7 @@ def api_vcenter_inventory(x_vcenter_session: str | None = Header(default=None)):
             si = connect_vcenter_auto(host=host, session_id=x_vcenter_session)
         else:
             user = str(cfg.get("vcenter_user", "")).strip()
-            pwd  = str(cfg.get("vcenter_password", "")).strip()
+            pwd  = get_session_password(x_session_token.strip())
             if not user:
                 raise HTTPException(status_code=400, detail="vcenter_user must be set in Config first")
             si = connect_vcenter_auto(host=host, user=user, pwd=pwd)
@@ -231,11 +231,11 @@ class PluginRegisterIn(BaseModel):
 
 
 @router.post("/api/vcenter/plugin/register")
-def api_plugin_register(body: PluginRegisterIn, x_vcenter_session: str = Header(default="")):
+def api_plugin_register(body: PluginRegisterIn, x_vcenter_session: str = Header(default=""), x_session_token: str = Header(default="")):
     cfg = _read_config()
     vcenter_host     = cfg.get("vcenter_host", "")
     vcenter_user     = cfg.get("vcenter_user", "")
-    vcenter_password = cfg.get("vcenter_password", "")
+    vcenter_password = get_session_password(x_session_token.strip())
     session_id = x_vcenter_session.strip()
     if not vcenter_host:
         raise HTTPException(400, "vCenter host not configured")
@@ -290,11 +290,11 @@ def api_plugin_thumbprint(url: str):
 
 
 @router.post("/api/vcenter/plugin/unregister")
-def api_plugin_unregister(body: PluginKeyIn, x_vcenter_session: str = Header(default="")):
+def api_plugin_unregister(body: PluginKeyIn, x_vcenter_session: str = Header(default=""), x_session_token: str = Header(default="")):
     cfg = _read_config()
     vcenter_host     = cfg.get("vcenter_host", "")
     vcenter_user     = cfg.get("vcenter_user", "")
-    vcenter_password = cfg.get("vcenter_password", "")
+    vcenter_password = get_session_password(x_session_token.strip())
     session_id = x_vcenter_session.strip()
     if not vcenter_host:
         raise HTTPException(400, "vCenter host not configured")

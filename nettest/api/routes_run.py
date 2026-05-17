@@ -19,7 +19,7 @@ from pydantic import BaseModel
 import nettest.db as _db
 from nettest.runner import RunConfig, execute_run
 from nettest.vcenter_utils import connect_vcenter_auto, disconnect_vcenter, get_all_vms_by_moid, delete_vm
-from nettest.api.deps import WORKSPACE, ARTIFACTS, _runs, _read_config
+from nettest.api.deps import WORKSPACE, ARTIFACTS, _runs, _read_config, get_session_password
 
 router = APIRouter()
 
@@ -46,18 +46,18 @@ class RunIn(BaseModel):
 
 
 @router.post("/api/run")
-def api_start_run(req: RunIn, x_vcenter_session: str = Header(default="")):
+def api_start_run(req: RunIn, x_vcenter_session: str = Header(default=""), x_vcenter_host: str = Header(default=""), x_session_token: str = Header(default="")):
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     q: _queue.Queue = _queue.Queue()
     _runs[run_id] = {"queue": q, "returncode": None}
     _db.insert_run(run_id, run_id)
 
     cfg_dict = _read_config()
-    vc_host = str(cfg_dict.get("vcenter_host", "")).strip()
-    # Plugin mode: session header supplied — skip credentials
+    # Plugin mode: session header supplied — host/credentials may come from headers
     session_id = x_vcenter_session.strip()
+    vc_host = str(cfg_dict.get("vcenter_host", "")).strip() or x_vcenter_host.strip()
     vc_user = "" if session_id else str(cfg_dict.get("vcenter_user", "")).strip()
-    vc_pass = "" if session_id else str(cfg_dict.get("vcenter_password", "")).strip()
+    vc_pass = "" if session_id else get_session_password(x_session_token.strip())
 
     def _worker() -> None:
         rc = 4
@@ -150,7 +150,7 @@ def api_get_result(run_id: str):
 
 
 @router.post("/api/run/{run_id}/cleanup")
-def api_cleanup_run(run_id: str, x_vcenter_session: str = Header(default="")):
+def api_cleanup_run(run_id: str, x_vcenter_session: str = Header(default=""), x_vcenter_host: str = Header(default=""), x_session_token: str = Header(default="")):
     """Delete all VMs recorded in the created_objects table for a run."""
     registry = _db.get_created_objects(run_id)
     if registry.get("cleaned"):
@@ -161,16 +161,19 @@ def api_cleanup_run(run_id: str, x_vcenter_session: str = Header(default="")):
         return {"cleaned": 0, "failed": 0, "skipped": 0, "detail": "no real VMs to delete"}
 
     cfg = _read_config()
-    vcenter_host     = cfg.get("vcenter_host", "")
-    vcenter_user     = cfg.get("vcenter_user", "")
-    vcenter_password = cfg.get("vcenter_password", "")
-    vm_prefix        = cfg.get("vm_prefix", "nettest")
     session_id       = x_vcenter_session.strip()
+    # In plugin mode the host may arrive via X-Vcenter-Host header; fall back to config
+    vcenter_host     = str(cfg.get("vcenter_host", "")).strip() or x_vcenter_host.strip()
+    vcenter_user     = "" if session_id else str(cfg.get("vcenter_user", "")).strip()
+    vcenter_password = "" if session_id else get_session_password(x_session_token.strip())
+    vm_prefix        = cfg.get("vm_prefix", "nettest")
 
-    if not vcenter_host:
-        raise HTTPException(400, "vCenter host not configured")
-    if not session_id and (not vcenter_user or not vcenter_password):
-        raise HTTPException(400, "vCenter credentials not configured")
+    if not session_id:
+        # Standalone mode: host and credentials are required
+        if not vcenter_host:
+            raise HTTPException(400, "vCenter host not configured")
+        if not vcenter_user or not vcenter_password:
+            raise HTTPException(400, "vCenter credentials not configured")
 
     try:
         from pyVmomi import vim as _vim

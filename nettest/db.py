@@ -9,6 +9,9 @@ from pathlib import Path
 _lock = threading.Lock()
 _db_path: Path | None = None
 
+# Keys that must never be persisted to SQLite; kept in process memory only.
+SENSITIVE_CONFIG_KEYS: frozenset[str] = frozenset({"vcenter_password"})
+
 DDL = """
 CREATE TABLE IF NOT EXISTS runs (
     run_id     TEXT PRIMARY KEY,
@@ -75,6 +78,9 @@ def init(db_path: Path) -> None:
             con.execute("ALTER TABLE created_objects ADD COLUMN cleaned INTEGER NOT NULL DEFAULT 0")
         except sqlite3.OperationalError:
             pass  # already exists
+        # Security migration: purge any previously stored sensitive config keys
+        for _key in SENSITIVE_CONFIG_KEYS:
+            con.execute("DELETE FROM config WHERE key=?", (_key,))
 
 
 def _connect() -> sqlite3.Connection:
@@ -272,7 +278,9 @@ def migrate_config_from_file(config_path: Path) -> None:
         return
     try:
         data = json.loads(config_path.read_text(encoding="utf-8"))
-        save_config(data)
+        # Never persist sensitive fields to the database
+        safe = {k: v for k, v in data.items() if k not in SENSITIVE_CONFIG_KEYS}
+        save_config(safe)
     except Exception:
         pass
 

@@ -1,10 +1,11 @@
-"""API routes: /api/config and /api/upload/*"""
+"""API routes: /api/config, /api/session, and /api/upload/*"""
 from __future__ import annotations
 
 from pathlib import Path
 from typing import List
 
 from fastapi import APIRouter, HTTPException, UploadFile, File
+from pydantic import BaseModel
 
 import nettest.db as _db
 from nettest.api.deps import (
@@ -13,6 +14,8 @@ from nettest.api.deps import (
     _write_config,
     _parse_input_file,
     _validate_rows,
+    create_session,
+    revoke_session,
 )
 
 router = APIRouter()
@@ -27,6 +30,25 @@ def api_get_config():
 @router.put("/api/config")
 def api_put_config(body: dict):
     _write_config(body)
+    return {"ok": True}
+
+
+# ── Session (password exchanged once for a short-lived opaque token) ──────────
+class SessionIn(BaseModel):
+    vcenter_password: str = ""
+
+
+@router.post("/api/session")
+def api_create_session(body: SessionIn):
+    """Exchange the vCenter password for a server-side session token (TTL 8 h).
+    The password is never stored on disk and is never sent again after this call."""
+    token = create_session(body.vcenter_password)
+    return {"session_token": token}
+
+
+@router.delete("/api/session/{token}")
+def api_revoke_session(token: str):
+    revoke_session(token)
     return {"ok": True}
 
 
