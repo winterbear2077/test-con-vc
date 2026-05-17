@@ -18,7 +18,6 @@ export class HistoryComponent implements OnInit {
   loading = false;
   error = '';
   cleaningId: string | null = null;
-  cleanedIds = new Set<string>();
   cleanErrMsg: Record<string, string> = {};
   deletingId: string | null = null;
   readonly devMode = isDevMode();
@@ -72,12 +71,13 @@ export class HistoryComponent implements OnInit {
     this.selectedResult = null;
   }
 
-  cleanup(runId: string) {
-    if (!confirm('Delete all test VMs for run ' + runId + '?')) return;
-    this.cleaningId = runId;
-    this.api.cleanupRun(runId).subscribe({
-      next: () => { this.cleanedIds.add(runId); this.cleaningId = null; },
-      error: err => { this.cleanErrMsg[runId] = '\u2717 ' + (err.error?.detail || err.message); this.cleaningId = null; }
+  cleanup(run: HistoryEntry) {
+    if (run.vms_cleaned) return;
+    if (!confirm('Delete all test VMs for run ' + run.run_id + '?')) return;
+    this.cleaningId = run.run_id;
+    this.api.cleanupRun(run.run_id).subscribe({
+      next: () => { run.vms_cleaned = 1; this.cleaningId = null; },
+      error: err => { this.cleanErrMsg[run.run_id] = '\u2717 ' + (err.error?.detail || err.message); this.cleaningId = null; }
     });
   }
 
