@@ -404,6 +404,13 @@ def provision_test_vms(
                 "memboot_iso_path is required when boot_method='memboot'. "
                 "Build it with ovf/build_mini_iso.sh and pass --memboot-iso-path."
             )
+        _pm = str(getattr(args, "poll_method", "guestinfo") or "guestinfo")
+        if _pm == "guestinfo":
+            logger.warning(
+                "poll_method='guestinfo' is not supported with boot_method='memboot' "
+                "(no vmtoolsd in the memboot initramfs); switching to poll_method='serial'"
+            )
+            args.poll_method = "serial"
     else:
         raise RuntimeError(f"Unknown boot_method: {boot_method!r}. Use 'ovf' or 'memboot'.")
 

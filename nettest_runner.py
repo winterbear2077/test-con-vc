@@ -185,6 +185,16 @@ def run() -> int:
         memboot_iso_path=_get("memboot_iso_path", ""),
     )
 
+    # memboot VMs have no vmtoolsd — fall back to serial when poll_method was
+    # not explicitly set (or was left at the guestinfo default).
+    if cfg.boot_method == "memboot" and cfg.poll_method == "guestinfo":
+        import logging as _logging
+        _logging.getLogger("nettest.runner").warning(
+            "boot_method=memboot with poll_method=guestinfo is not supported "
+            "(no vmtoolsd in the memboot initramfs); switching to poll_method=serial"
+        )
+        cfg.poll_method = "serial"
+
     import json as _json
 
     def _result_cb(result: Dict) -> None:

@@ -192,7 +192,13 @@ def execute_run(
         # getattr(args, "_serial_server") / getattr(args, "_vsock_server").
         _serial_srv = None
         _vsock_srv  = None
-        if cfg.execute_vcenter and cfg.probe_mode in ("in-guest", "in-guest-ping"):
+        # memboot always uses serial/vsock for communication regardless of
+        # probe_mode; ovf+in-guest also needs it.
+        _needs_probe_server = cfg.execute_vcenter and (
+            cfg.boot_method == "memboot"
+            or cfg.probe_mode in ("in-guest", "in-guest-ping")
+        )
+        if _needs_probe_server:
             if cfg.poll_method == "serial":
                 from nettest.serial_probe import SerialProbeServer, detect_controller_ip
                 host = cfg.serial_probe_host or detect_controller_ip(cfg.vcenter_host)
