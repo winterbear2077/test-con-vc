@@ -8,6 +8,8 @@ export interface AppConfig {
   vcenter_user?: string;
   vcenter_password?: string;
   ovf_path?: string;
+  memboot_iso_path?: string;
+  boot_method?: string;
   input?: string;
   resource_pool?: string;
   vm_prefix?: string;
@@ -101,6 +103,12 @@ export class ApiService {
     const fd = new FormData();
     for (let i = 0; i < files.length; i++) fd.append('files', files[i]);
     return this.http.post<{ path: string }>(this.base + '/upload/ovf', fd);
+  }
+
+  uploadIso(file: File): Observable<{ path: string }> {
+    const fd = new FormData();
+    fd.append('file', file);
+    return this.http.post<{ path: string }>(this.base + '/upload/iso', fd);
   }
 
   uploadInput(file: File): Observable<{ path: string }> {
