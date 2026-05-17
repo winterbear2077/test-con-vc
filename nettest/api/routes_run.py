@@ -153,8 +153,11 @@ def api_get_result(run_id: str):
 def api_cleanup_run(run_id: str, x_vcenter_session: str = Header(default="")):
     """Delete all VMs recorded in the created_objects table for a run."""
     registry = _db.get_created_objects(run_id)
+    if registry.get("cleaned"):
+        return {"cleaned": 0, "failed": 0, "skipped": 0, "detail": "already cleaned"}
     moids = [m for m in registry.get("vms", []) if m and m != "dry-run-moid"]
     if not moids:
+        _db.mark_cleaned(run_id)
         return {"cleaned": 0, "failed": 0, "skipped": 0, "detail": "no real VMs to delete"}
 
     cfg = _read_config()
@@ -203,6 +206,8 @@ def api_cleanup_run(run_id: str, x_vcenter_session: str = Header(default="")):
         failed_moids = {f["moid"] for f in failures}
         registry["vms"] = [m for m in registry["vms"] if m in failed_moids]
         _db.upsert_created_objects(run_id, registry)
+        if not registry["vms"]:
+            _db.mark_cleaned(run_id)
 
         return {"cleaned": cleaned, "failed": failed, "skipped": skipped, "failures": failures}
     finally:

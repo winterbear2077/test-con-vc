@@ -72,6 +72,7 @@ export interface HistoryEntry {
   passed?: number;
   failed?: number;
   total?: number;
+  vms_cleaned?: number;
   [key: string]: any;
 }
 

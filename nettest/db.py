@@ -25,7 +25,8 @@ CREATE TABLE IF NOT EXISTS created_objects (
     run_id TEXT PRIMARY KEY REFERENCES runs(run_id) ON DELETE CASCADE,
     vms_json  TEXT NOT NULL DEFAULT '[]',
     nics_json TEXT NOT NULL DEFAULT '[]',
-    tags_json TEXT NOT NULL DEFAULT '[]'
+    tags_json TEXT NOT NULL DEFAULT '[]',
+    cleaned   INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS config (
@@ -67,6 +68,11 @@ def init(db_path: Path) -> None:
         # Migration: add pg column to networks if missing
         try:
             con.execute("ALTER TABLE networks ADD COLUMN pg TEXT NOT NULL DEFAULT ''")
+        except sqlite3.OperationalError:
+            pass  # already exists
+        # Migration: add cleaned column to created_objects if missing
+        try:
+            con.execute("ALTER TABLE created_objects ADD COLUMN cleaned INTEGER NOT NULL DEFAULT 0")
         except sqlite3.OperationalError:
             pass  # already exists
 
@@ -133,8 +139,11 @@ def finish_run_error(run_id: str, detail: "dict | str") -> None:
 def get_history(limit: int = 100) -> list[dict]:
     with _connect() as con:
         rows = con.execute(
-            "SELECT run_id, status, probe_mode, total, passed, failed FROM runs "
-            "ORDER BY created_at DESC LIMIT ?",
+            """SELECT r.run_id, r.status, r.probe_mode, r.total, r.passed, r.failed,
+                      COALESCE(co.cleaned, 0) AS vms_cleaned
+               FROM runs r
+               LEFT JOIN created_objects co ON co.run_id = r.run_id
+               ORDER BY r.created_at DESC LIMIT ?""",
             (limit,),
         ).fetchall()
     return [dict(r) for r in rows]
@@ -169,19 +178,29 @@ def get_created_objects(run_id: str) -> dict:
     """Return the created-objects registry for a run, or an empty registry."""
     with _connect() as con:
         row = con.execute(
-            "SELECT vms_json, nics_json, tags_json FROM created_objects WHERE run_id=?",
+            "SELECT vms_json, nics_json, tags_json, cleaned FROM created_objects WHERE run_id=?",
             (run_id,),
         ).fetchone()
     if row:
         try:
             return {
-                "vms":  json.loads(row[0] or "[]"),
-                "nics": json.loads(row[1] or "[]"),
-                "tags": json.loads(row[2] or "[]"),
+                "vms":     json.loads(row[0] or "[]"),
+                "nics":    json.loads(row[1] or "[]"),
+                "tags":    json.loads(row[2] or "[]"),
+                "cleaned": bool(row[3]),
             }
         except Exception:
             pass
-    return {"vms": [], "nics": [], "tags": []}
+    return {"vms": [], "nics": [], "tags": [], "cleaned": False}
+
+
+def mark_cleaned(run_id: str) -> None:
+    """Mark a run's VMs as cleaned so cleanup cannot be triggered again."""
+    with _lock, _connect() as con:
+        con.execute(
+            "UPDATE created_objects SET cleaned=1 WHERE run_id=?",
+            (run_id,),
+        )
 
 
 def get_result(run_id: str) -> dict | None:
