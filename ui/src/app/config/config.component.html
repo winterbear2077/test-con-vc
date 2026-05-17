@@ -41,7 +41,20 @@
       <div class="card-block">
         <div class="card-text">
           <div class="clr-row">
-            <div class="clr-col-sm-6">
+            <div class="clr-col-12" style="margin-bottom:12px">
+              <label class="clr-control-label" style="display:block;margin-bottom:6px">Boot Method</label>
+              <div class="clr-radio-wrapper" style="display:inline-flex;align-items:center;gap:4px;margin-right:20px">
+                <input type="radio" id="bootOvf" name="bootMethod" value="ovf"
+                       [(ngModel)]="cfg.boot_method" class="clr-radio" />
+                <label for="bootOvf" class="clr-control-label" style="cursor:pointer">OVF</label>
+              </div>
+              <div class="clr-radio-wrapper" style="display:inline-flex;align-items:center;gap:4px">
+                <input type="radio" id="bootMemboot" name="bootMethod" value="memboot"
+                       [(ngModel)]="cfg.boot_method" class="clr-radio" />
+                <label for="bootMemboot" class="clr-control-label" style="cursor:pointer">Memboot ISO</label>
+              </div>
+            </div>
+            <div class="clr-col-sm-6" *ngIf="cfg.boot_method !== 'memboot'">
               <clr-input-container>
                 <label>OVF Template Path</label>
                 <input clrInput [(ngModel)]="cfg.ovf_path" placeholder="./ovf/Alpine-nettest.ovf" />
@@ -49,6 +62,16 @@
               <label class="btn btn-sm btn-outline" style="margin-top:4px">
                 <clr-icon shape="folder" size="14"></clr-icon> Browse OVF bundle
                 <input type="file" multiple style="display:none" (change)="onOvfFiles($event)" />
+              </label>
+            </div>
+            <div class="clr-col-sm-6" *ngIf="cfg.boot_method === 'memboot'">
+              <clr-input-container>
+                <label>Memboot ISO Path</label>
+                <input clrInput [(ngModel)]="cfg.memboot_iso_path" placeholder="./ovf/nettest-mini.iso" />
+              </clr-input-container>
+              <label class="btn btn-sm btn-outline" style="margin-top:4px">
+                <clr-icon shape="upload" size="14"></clr-icon> Browse ISO
+                <input type="file" accept=".iso" style="display:none" (change)="onIsoFile($event)" />
               </label>
             </div>
             <div class="clr-col-sm-6">

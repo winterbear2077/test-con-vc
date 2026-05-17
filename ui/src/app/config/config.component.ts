@@ -32,6 +32,7 @@ export class ConfigComponent implements OnInit {
     this.api.getConfig().subscribe({
       next: c => {
         this.cfg = c;
+        if (!this.cfg.boot_method) this.cfg.boot_method = 'ovf';
         if (!this.pluginUrl && typeof window !== 'undefined') {
           const loc = window.location;
           if (loc.protocol === 'https:') {
@@ -57,6 +58,15 @@ export class ConfigComponent implements OnInit {
     if (!files || !files.length) return;
     this.api.uploadOvf(files).subscribe({
       next: r => { this.cfg.ovf_path = r.path; this.saveMsg = '\u2713 Uploaded ' + files.length + ' file(s)'; },
+      error: err => { this.saveMsg = '\u2717 Upload failed: ' + (err.error?.detail || err.message); }
+    });
+  }
+
+  onIsoFile(event: Event) {
+    const files = (event.target as HTMLInputElement).files;
+    if (!files || !files.length) return;
+    this.api.uploadIso(files[0]).subscribe({
+      next: r => { this.cfg.memboot_iso_path = r.path; this.saveMsg = '\u2713 Uploaded ' + files[0].name; },
       error: err => { this.saveMsg = '\u2717 Upload failed: ' + (err.error?.detail || err.message); }
     });
   }

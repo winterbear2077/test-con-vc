@@ -87,3 +87,21 @@ async def api_upload_ovf(files: List[UploadFile] = File(...)):
     cfg["ovf_path"] = rel
     _write_config(cfg)
     return {"ok": True, "path": rel}
+
+
+@router.post("/api/upload/iso")
+async def api_upload_iso(file: UploadFile = File(...)):
+    """Upload a memboot ISO file to workspace/ovf/."""
+    name = Path(file.filename or "").name
+    if not name:
+        raise HTTPException(400, "No filename")
+    if not name.lower().endswith(".iso"):
+        raise HTTPException(400, "File must be a .iso")
+    ovf_dir = WORKSPACE / "ovf"
+    ovf_dir.mkdir(exist_ok=True)
+    (ovf_dir / name).write_bytes(await file.read())
+    rel = f"./ovf/{name}"
+    cfg = _read_config()
+    cfg["memboot_iso_path"] = rel
+    _write_config(cfg)
+    return {"ok": True, "path": rel}
