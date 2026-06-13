@@ -326,6 +326,8 @@ def provision_test_vms(
     gateway_by_subnet: Optional[Dict[str, str]] = None,  # subnet -> gateway IP
     vms_per_subnet: int = 1,  # how many VMs to create per subnet row
     on_vm_created: Optional[Any] = None,  # callable(moid: str) — called immediately after each VM is created
+    on_iso_created: Optional[Any] = None,  # callable(datacenter: str, ds_path: str)
+    check_cancel: Optional[Any] = None,  # callable(label: str) -> None; may raise to abort
 ) -> List[VMInstance]:
     """
     Provision test VMs for each unique network (VLAN/subnet/cluster).
@@ -432,6 +434,8 @@ def provision_test_vms(
                 unique_cluster_keys[ck] = row
 
         for (dc_name_s, cl_name_s), seed_row in unique_cluster_keys.items():
+            if check_cancel:
+                check_cancel(f"before cluster init {dc_name_s}/{cl_name_s}")
             placement_key_s = (dc_name_s, cl_name_s)
             if placement_key_s not in placements:
                 continue
@@ -502,12 +506,16 @@ def provision_test_vms(
                     local_iso_path=memboot_iso_path,
                 )
                 iso_map[(dc_name_s, cl_name_s)] = ds_iso_path
+                if on_iso_created:
+                    on_iso_created(dc_name_s, ds_iso_path)
                 logger.info(
                     "Memboot ISO ready for cluster %s/%s: %s",
                     dc_name_s, cl_name_s, ds_iso_path,
                 )
 
         for net_idx, (network_key, row) in enumerate(unique_networks.items()):
+            if check_cancel:
+                check_cancel(f"before subnet provisioning {network_key}")
             dc_name, cl_name, vlan_id, subnet = network_key
             placement_key    = (dc_name, cl_name)
             network_bind_key = (dc_name, cl_name, row.vlan)
@@ -628,9 +636,15 @@ def provision_test_vms(
             # For guestinfo: write extraConfig before power-on (no vmtoolsd cache race).
             # For serial/vsock: attach device, then power on (no extraConfig needed).
             subnet_vm_objs: List[Any] = []
+            subnet_vm_names: List[str] = []
+            subnet_power_on_ts: List[float] = []
             vm_needs_wait:  List[bool] = []   # only meaningful for guestinfo mode
 
             for vm_idx in range(max(1, vms_per_subnet)):
+                if check_cancel:
+                    check_cancel(
+                        f"before vm create subnet={subnet} idx={vm_idx}"
+                    )
                 alloc_ip      = alloc_ips[vm_idx]
                 vm_name       = f"{args.vm_prefix}-{run_id}-net-{net_idx:04d}-{vm_idx}"
                 intra_targets = per_vm_intra_targets[vm_idx]
@@ -729,11 +743,14 @@ def provision_test_vms(
                         logger.warning("Could not enable remoteSerialPort firewall on %s: %s", host_obj_for_vm.name, _fw_exc)
 
                 wait_for_task(vm_obj.PowerOnVM_Task())
+                power_on_ts = time.time()
                 logger.info(
                     "Powered on: %s (boot=%s, poll=%s, host=%s)",
                     vm_name, boot_method, poll_method, host_obj_for_vm.name,
                 )
                 subnet_vm_objs.append(vm_obj)
+                subnet_vm_names.append(vm_name)
+                subnet_power_on_ts.append(power_on_ts)
 
             # ── Phase 2 (guestinfo only): wait for VMware Tools ───────────────
             subnet_tools_ok: List[bool] = []
@@ -794,13 +811,22 @@ def provision_test_vms(
 
             elif poll_method == "serial":
                 _serial_server = getattr(args, "_serial_server")
+                if subnet_power_on_ts:
+                    oldest = min(subnet_power_on_ts)
+                    logger.info(
+                        "Starting serial probe exchange for subnet %s after %.1fs since first VM power-on",
+                        subnet,
+                        time.time() - oldest,
+                    )
                 configs = [
                     {
                         "port":    serial_ports[vi],
+                        "vm_name": subnet_vm_names[vi],
                         "ip":      alloc_ips[vi],
                         "prefix":  prefix_len,
                         "gw":      row.gw,
                         "targets": per_vm_intra_targets[vi] + per_vm_cross_targets[vi],
+                        "power_on_ts": subnet_power_on_ts[vi],
                     }
                     for vi in range(len(subnet_vm_objs))
                 ]

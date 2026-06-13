@@ -233,10 +233,12 @@ class SerialProbeServer:
 
         def _run_one(idx: int, cfg: Dict) -> None:
             port    = cfg["port"]
+            vm_name = str(cfg.get("vm_name", f"vm_idx={idx}"))
             ip      = cfg["ip"]
             prefix  = cfg["prefix"]
             gw      = cfg["gw"]
             targets = cfg.get("targets", [])
+            power_on_ts = float(cfg.get("power_on_ts", 0.0) or 0.0)
 
             try:
                 pre_bound = self._pre_bound.get(port)
@@ -246,10 +248,74 @@ class SerialProbeServer:
                         ready_events[idx].set()
                         return
 
+                    logger.info(
+                        "Serial probe connected: vm=%s port=%s sync=%s",
+                        vm_name,
+                        port,
+                        sync,
+                    )
+
+                    # ── Wait for probe hello ────────────────────────────────
+                    # The probe sends {"status":"hello"} after opening
+                    # /dev/ttyS0 to signal it is ready.  We MUST wait here
+                    # before sending config; otherwise the config arrives
+                    # before the VM opens the serial device and is silently
+                    # dropped by ESXi.
+                    try:
+                        hello = sess.recv()
+                    except Exception as exc:
+                        errors[idx] = f"serial-hello-timeout: {exc}"
+                        ready_events[idx].set()
+                        return
+                    if hello.get("status") != "hello":
+                        logger.warning(
+                            "Unexpected hello from vm=%s port=%s: %s",
+                            vm_name, port, hello,
+                        )
+                    logger.info(
+                        "Serial probe hello received: vm=%s port=%s delay_from_poweron=%.1fs",
+                        vm_name,
+                        port,
+                        max(0.0, time.time() - power_on_ts) if power_on_ts > 0 else 0.0,
+                    )
+
+                    if power_on_ts > 0:
+                        delay_sec = max(0.0, time.time() - power_on_ts)
+                        logger.info(
+                            "Serial probe timing: vm=%s port=%s power_on_to_config_start=%.1fs",
+                            vm_name,
+                            port,
+                            delay_sec,
+                        )
+
                     if sync:
                         # ── Phase 1: send network config, wait for "ready" ──
+                        logger.info(
+                            "Serial probe TX phase1 config: vm=%s port=%s ip=%s/%s gw=%s",
+                            vm_name,
+                            port,
+                            ip,
+                            prefix,
+                            gw,
+                        )
                         sess.send({"ip": ip, "prefix": prefix, "gw": gw})
                         msg = sess.recv()
+                        # Some probe builds can emit an extra hello; ignore and
+                        # continue waiting for the phase-1 ready marker.
+                        if msg.get("status") == "hello":
+                            logger.info(
+                                "Serial probe RX phase1 extra hello: vm=%s port=%s msg=%s",
+                                vm_name,
+                                port,
+                                msg,
+                            )
+                            msg = sess.recv()
+                        logger.info(
+                            "Serial probe RX phase1: vm=%s port=%s msg=%s",
+                            vm_name,
+                            port,
+                            msg,
+                        )
                         if msg.get("status") != "ready":
                             errors[idx] = f"unexpected-phase1-status:{msg}"
                             ready_events[idx].set()
@@ -263,14 +329,45 @@ class SerialProbeServer:
                                 return
 
                         # ── Phase 2: send targets, receive results ─────────
+                        logger.info(
+                            "Serial probe TX phase2 targets: vm=%s port=%s count=%s",
+                            vm_name,
+                            port,
+                            len(targets),
+                        )
                         sess.send({"targets": targets})
                     else:
                         # Merged single round-trip: config + targets together.
+                        logger.info(
+                            "Serial probe TX merged config: vm=%s port=%s ip=%s/%s gw=%s targets=%s",
+                            vm_name,
+                            port,
+                            ip,
+                            prefix,
+                            gw,
+                            len(targets),
+                        )
                         sess.send({"ip": ip, "prefix": prefix, "gw": gw,
                                    "targets": targets})
                         ready_events[idx].set()
 
                     done = sess.recv()
+                    # Ignore one trailing duplicate hello and keep waiting for
+                    # the actual done payload.
+                    if done.get("status") == "hello":
+                        logger.info(
+                            "Serial probe RX done extra hello: vm=%s port=%s msg=%s",
+                            vm_name,
+                            port,
+                            done,
+                        )
+                        done = sess.recv()
+                    logger.info(
+                        "Serial probe RX done: vm=%s port=%s msg=%s",
+                        vm_name,
+                        port,
+                        done,
+                    )
                     if done.get("status") == "done":
                         results[idx] = done.get("results", {})
                     else:

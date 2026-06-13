@@ -68,20 +68,28 @@ export class RunTestComponent implements OnDestroy {
     }
 
     this.running = true; this.result = null; this.logLines = []; this.indicator = 'running';
-    const req = {
-      execute_vcenter: this.executeVcenter,
-      probe_mode: this.probeMode,
-      max_retries: this.maxRetries,
-      cleanup_on_failure: this.cleanupOnFailure,
-      phased_testing: this.phasedTesting,
-      vms_per_subnet: this.vmsPerSubnet,
-      max_vms_per_phase: this.maxVmsPerPhase,
-      phases: this.selectedPhases.join(','),
-      vrf_links: [],
-    };
-    this.api.startRun(req).subscribe({
-      next: ({ run_id }) => { this._currentRunId = run_id; this.appendLog('\u25B6 Run started: ' + run_id, 'hdr'); this.stream(run_id); },
-      error: err => { this.appendLog('Error: ' + (err.error?.detail || err.message), 'err'); this.running = false; this.indicator = 'idle'; }
+    this.api.getVrfRules().subscribe({
+      next: ({ rules }) => {
+        const vrf_links = rules
+          .filter(r => r.from_vrf && r.to_vrf)
+          .map(r => r.action === 'FAIL' ? `${r.from_vrf}:${r.to_vrf}:FAIL` : `${r.from_vrf}:${r.to_vrf}`);
+        const req = {
+          execute_vcenter: this.executeVcenter,
+          probe_mode: this.probeMode,
+          max_retries: this.maxRetries,
+          cleanup_on_failure: this.cleanupOnFailure,
+          phased_testing: this.phasedTesting,
+          vms_per_subnet: this.vmsPerSubnet,
+          max_vms_per_phase: this.maxVmsPerPhase,
+          phases: this.selectedPhases.join(','),
+          vrf_links,
+        };
+        this.api.startRun(req).subscribe({
+          next: ({ run_id }) => { this._currentRunId = run_id; this.appendLog('\u25B6 Run started: ' + run_id, 'hdr'); this.stream(run_id); },
+          error: err => { this.appendLog('Error: ' + (err.error?.detail || err.message), 'err'); this.running = false; this.indicator = 'idle'; }
+        });
+      },
+      error: () => { this.appendLog('Error: failed to load VRF rules', 'err'); this.running = false; this.indicator = 'idle'; }
     });
   }
 

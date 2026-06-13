@@ -98,8 +98,8 @@ done
 cp /repo/netprobe "${INITRD}/usr/local/bin/netprobe"
 chmod 755 "${INITRD}/usr/local/bin/netprobe"
 
-# VMware vmci/vsock kernel modules — copy flat and decompress for insmod
-for mod in vmw_vmci vsock vmw_vsock_vmci_transport; do
+# VMware vmci/vsock/vmxnet3 kernel modules — copy flat and decompress for insmod
+for mod in vmw_vmci vsock vmw_vsock_vmci_transport vmxnet3; do
     src=$(find "/lib/modules/${KVER}" -name "${mod}.ko*" 2>/dev/null | head -1 || true)
     if [ -n "${src}" ]; then
         dest="${INITRD}/lib/modules/${mod}.ko"

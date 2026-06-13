@@ -7,6 +7,8 @@
 //! a RTM_GETLINK dump — simpler and avoids 60+ lines of response parsing.
 
 use std::io::{self, Write};
+use std::thread;
+use std::time::Duration;
 
 use crate::log::log;
 
@@ -149,16 +151,26 @@ impl Drop for NlSock {
 // ── Sysfs interface discovery ─────────────────────────────────────────────────
 
 fn find_iface() -> io::Result<(i32, String)> {
-    for entry in std::fs::read_dir("/sys/class/net")?.flatten() {
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if name == "lo" { continue; }
-        if let Ok(s) = std::fs::read_to_string(
-                format!("/sys/class/net/{}/ifindex", name)) {
-            if let Ok(idx) = s.trim().parse::<i32>() {
-                return Ok((idx, name));
+    const RETRIES: usize = 60;
+    const SLEEP_MS: u64 = 500;
+
+    for _ in 0..RETRIES {
+        if let Ok(entries) = std::fs::read_dir("/sys/class/net") {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if name == "lo" {
+                    continue;
+                }
+                if let Ok(s) = std::fs::read_to_string(format!("/sys/class/net/{}/ifindex", name)) {
+                    if let Ok(idx) = s.trim().parse::<i32>() {
+                        return Ok((idx, name));
+                    }
+                }
             }
         }
+        thread::sleep(Duration::from_millis(SLEEP_MS));
     }
+
     Err(io::Error::new(io::ErrorKind::NotFound, "no non-loopback interface"))
 }
 

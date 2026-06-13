@@ -21,7 +21,7 @@ mount -t devpts devpts /dev/pts 2>/dev/null || true
 
 # Load VMware vmci/vsock modules so vsock poll_method is available.
 # Non-fatal — serial mode works without them.
-for mod in vmw_vmci vsock vmw_vsock_vmci_transport; do
+for mod in vmw_vmci vsock vmw_vsock_vmci_transport vmxnet3; do
     ko="/lib/modules/${mod}.ko"
     [ -f "$ko" ] && insmod "$ko" 2>/dev/null || true
 done

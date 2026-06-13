@@ -21,14 +21,63 @@ mod serial;
 mod tcp;
 mod vsock;
 
-use std::fs::{File, OpenOptions};
-use std::io::{self, BufReader, BufWriter, Write};
+use std::fs::OpenOptions;
+use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::os::unix::fs::FileTypeExt;
+use std::time::{Duration, Instant};
 
 use log::log;
 use protocol::{run_guestinfo_probe, run_probe_protocol};
 use serial::{open_serial, set_read_timeout};
 use vsock::vsock_connect;
+
+/// Open the serial port, send a hello to tell the controller the probe is ready,
+/// then wait up to `response_timeout_secs` for the controller to send the first
+/// byte of its JSON config.  Returns an error on timeout (serial not connected).
+fn run_serial_protocol(logf: &mut dyn Write, response_timeout_secs: u64) -> io::Result<()> {
+    use std::io::Cursor;
+
+    let serial = open_serial()?;
+    let fd = std::os::unix::io::AsRawFd::as_raw_fd(&serial);
+
+    // ── Step 1: send hello ────────────────────────────────────────────────
+    // This signals to the controller that the VM has opened /dev/ttyS0 and is
+    // ready to receive config.  The controller MUST NOT send config until it
+    // receives this message, otherwise data races with the VM boot sequence.
+    let hello = b"{\"status\":\"hello\"}\n";
+    let n = unsafe { libc::write(fd, hello.as_ptr() as *const libc::c_void, hello.len()) };
+    if n < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    log(logf, "  Serial: sent hello — waiting for controller config...");
+
+    // ── Step 2: wait for first byte of controller response ────────────────
+    // Poll with 5-second read windows so we don't spin.
+    set_read_timeout(fd, 50); // 50 × 100 ms = 5 s per read attempt
+    let deadline = Instant::now() + Duration::from_secs(response_timeout_secs);
+    let first_byte: u8 = loop {
+        let mut buf = [0u8; 1];
+        let n = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, 1) };
+        if n > 0 {
+            break buf[0];
+        }
+        if Instant::now() >= deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!("no controller response within {}s after hello", response_timeout_secs),
+            ));
+        }
+    };
+
+    // ── Step 3: run probe protocol ────────────────────────────────────────
+    // Prepend the already-consumed first byte and use longer per-read timeout.
+    set_read_timeout(fd, 255); // 25.5 s per read — protocol handles overall flow
+    let prefix: Cursor<[u8; 1]> = Cursor::new([first_byte]);
+    let chained = prefix.chain(serial.try_clone()?);
+    let mut reader = BufReader::new(chained);
+    let mut writer = BufWriter::new(serial);
+    run_probe_protocol(logf, &mut reader, &mut writer)
+}
 
 fn main() {
     let mut logf: Box<dyn Write> = OpenOptions::new()
@@ -41,53 +90,36 @@ fn main() {
 
     let vsock_port: u32 = std::env::var("VSOCK_PORT")
         .ok().and_then(|s| s.parse().ok()).unwrap_or(9000);
+    // Total time to wait for controller config after sending hello.
+    // Covers the full provisioning window (all VMs being powered on in parallel).
+    let serial_wait_secs: u64 = std::env::var("SERIAL_WAIT_SECS")
+        .ok().and_then(|s| s.parse().ok()).unwrap_or(300);
 
     // ── Channel 1: serial (/dev/ttyS0) ───────────────────────────────────────
-    // /dev/ttyS0 is always present as a char device on Linux even with no real
-    // serial port attached, so metadata() alone cannot tell us if a TCP-backed
-    // vSphere serial port is connected.  We probe by reading one byte with a
-    // short VTIME timeout (3 s).  If the controller is already connected it will
-    // have sent the first byte of the JSON config line; we chain that byte back
-    // into the stream before handing off to run_probe_protocol.
+    // Send hello once and wait up to serial_wait_secs for the controller to
+    // respond with config.  This single attempt avoids the double-hello race
+    // where a short fast-path timeout causes a second hello to be sent while
+    // the controller is already waiting for the probe's "done" reply.
     let is_serial = std::fs::metadata("/dev/ttyS0")
         .map(|m| m.file_type().is_char_device())
         .unwrap_or(false);
 
     if is_serial {
-        log(&mut *logf, "  Probing /dev/ttyS0 (3 s timeout)...");
-        let probe: io::Result<Option<u8>> = (|| {
-            let f = open_serial()?;
-            let fd = std::os::unix::io::AsRawFd::as_raw_fd(&f);
-            set_read_timeout(fd, 30); // 30 × 100 ms = 3 s
-            let mut buf = [0u8; 1];
-            let n = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, 1) };
-            if n > 0 { Ok(Some(buf[0])) } else { Ok(None) }
-        })();
-
-        match probe {
-            Ok(None) | Err(_) => {
-                log(&mut *logf, "  /dev/ttyS0: no data in 3 s — not connected, skipping");
+        log(
+            &mut *logf,
+            &format!("  Trying serial (/dev/ttyS0) — hello sent, waiting up to {}s...", serial_wait_secs),
+        );
+        match run_serial_protocol(&mut *logf, serial_wait_secs) {
+            Ok(()) => {
+                log(&mut *logf, "  Channel: serial — done");
+                finish(logf, Ok(()));
+                return;
             }
-            Ok(Some(first_byte)) => {
-                log(&mut *logf, "  Channel: serial (/dev/ttyS0)");
-                let result: io::Result<()> = (|| {
-                    use std::io::{Chain, Cursor, Read};
-                    let serial = open_serial()?;
-                    let fd = std::os::unix::io::AsRawFd::as_raw_fd(&serial);
-                    set_read_timeout(fd, 255); // 25.5 s per read; protocol handles overall flow
-                    // Prepend the already-consumed probe byte back into the read stream.
-                    let prefix: Cursor<[u8; 1]> = Cursor::new([first_byte]);
-                    let chained: Chain<Cursor<[u8; 1]>, File> = prefix.chain(serial.try_clone()?);
-                    let mut reader = BufReader::new(chained);
-                    let mut writer = BufWriter::new(serial);
-                    run_probe_protocol(&mut *logf, &mut reader, &mut writer)
-                })();
-                match result {
-                    Ok(()) => { finish(logf, Ok(())); return; }
-                    Err(ref e) => {
-                        log(&mut *logf, &format!("  serial failed ({}), trying next channel", e));
-                    }
-                }
+            Err(e) => {
+                log(
+                    &mut *logf,
+                    &format!("  serial timed out ({}s): {} — trying vsock/guestinfo", serial_wait_secs, e),
+                );
             }
         }
     }
@@ -118,7 +150,7 @@ fn main() {
         return;
     }
 
-    log(&mut *logf, "  ERROR: no channel available (no serial, no vsock, no vmtoolsd)");
+    log(&mut *logf, "  ERROR: no channel available (no serial data, no vsock, no vmtoolsd)");
     std::process::exit(1);
 }
 

@@ -8,7 +8,7 @@ import queue as _queue
 import threading
 import traceback
 from datetime import datetime, timezone
-from typing import List
+from typing import Any, List
 from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
@@ -35,6 +35,18 @@ def _header_host(value: str) -> str:
         return str(urlparse(s).hostname or "").strip()
     except Exception:
         return ""
+
+
+def _find_datacenter(content: Any, vim: Any, datacenter_name: str):
+    view = content.viewManager.CreateContainerView(content.rootFolder, [vim.Datacenter], True)
+    try:
+        target = datacenter_name.strip().upper()
+        for dc in view.view:
+            if str(dc.name).strip().upper() == target:
+                return dc
+    finally:
+        view.Destroy()
+    return None
 
 
 # ── Run model ─────────────────────────────────────────────────────────────────
@@ -201,9 +213,17 @@ def api_cleanup_run(run_id: str, request: Request, x_vcenter_session: str = Head
     if registry.get("cleaned"):
         return {"cleaned": 0, "failed": 0, "skipped": 0, "detail": "already cleaned"}
     moids = [m for m in registry.get("vms", []) if m and m != "dry-run-moid"]
-    if not moids:
+    iso_entries = [e for e in registry.get("isos", []) if isinstance(e, dict) and e.get("path")]
+    if not moids and not iso_entries:
         _db.mark_cleaned(run_id)
-        return {"cleaned": 0, "failed": 0, "skipped": 0, "detail": "no real VMs to delete"}
+        return {
+            "cleaned": 0,
+            "failed": 0,
+            "skipped": 0,
+            "iso_cleaned": 0,
+            "iso_failed": 0,
+            "detail": "no real VMs/ISOs to delete",
+        }
 
     cfg = _read_config()
     session_id       = x_vcenter_session.strip()
@@ -240,6 +260,7 @@ def api_cleanup_run(run_id: str, request: Request, x_vcenter_session: str = Head
         vm_by_moid = get_all_vms_by_moid(content, _vim)
 
         cleaned, failed, skipped = 0, 0, 0
+        iso_cleaned, iso_failed = 0, 0
         failures = []
         for moid in moids:
             vm_obj = vm_by_moid.get(moid)
@@ -256,12 +277,39 @@ def api_cleanup_run(run_id: str, request: Request, x_vcenter_session: str = Head
                 failed += 1
                 failures.append({"moid": moid, "name": str(getattr(vm_obj, "name", "")), "reason": reason})
 
-        failed_moids = {f["moid"] for f in failures}
+        failed_iso_entries = []
+        for entry in iso_entries:
+            ds_path = str(entry.get("path", "")).strip()
+            dc_name = str(entry.get("datacenter", "")).strip()
+            if not ds_path:
+                continue
+            try:
+                dc_obj = _find_datacenter(content, _vim, dc_name) if dc_name else None
+                task = content.fileManager.DeleteDatastoreFile_Task(name=ds_path, datacenter=dc_obj)
+                task_result = str(getattr(task.info, "state", ""))
+                if task_result != "success":
+                    from nettest.vcenter_utils import wait_for_task
+                    wait_for_task(task)
+                iso_cleaned += 1
+            except Exception as exc:
+                iso_failed += 1
+                failed_iso_entries.append(entry)
+                failures.append({"iso_path": ds_path, "datacenter": dc_name, "reason": str(exc)})
+
+        failed_moids = {f.get("moid") for f in failures if isinstance(f, dict) and f.get("moid")}
         registry["vms"] = [m for m in registry["vms"] if m in failed_moids]
+        registry["isos"] = failed_iso_entries
         _db.upsert_created_objects(run_id, registry)
-        if not registry["vms"]:
+        if not registry["vms"] and not registry.get("isos"):
             _db.mark_cleaned(run_id)
 
-        return {"cleaned": cleaned, "failed": failed, "skipped": skipped, "failures": failures}
+        return {
+            "cleaned": cleaned,
+            "failed": failed,
+            "skipped": skipped,
+            "iso_cleaned": iso_cleaned,
+            "iso_failed": iso_failed,
+            "failures": failures,
+        }
     finally:
         disconnect_vcenter(si)

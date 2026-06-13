@@ -202,7 +202,11 @@ export class ApiService {
   deleteHistory(runId: string): Observable<{ ok: boolean }> { return this.http.delete<{ ok: boolean }>(this.base + '/history/' + runId); }
 
   cleanupRun(runId: string): Observable<{ cleaned: number; skipped: number; failed: number }> {
-    return this.http.post<any>(this.base + '/run/' + runId + '/cleanup', {});
+    return this.http.post<any>(
+      this.base + '/run/' + runId + '/cleanup',
+      {},
+      this.sessionHeaders()
+    );
   }
 
   getVrfRules(): Observable<{ rules: VrfRuleRow[] }> {

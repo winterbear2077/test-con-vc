@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS created_objects (
     vms_json  TEXT NOT NULL DEFAULT '[]',
     nics_json TEXT NOT NULL DEFAULT '[]',
     tags_json TEXT NOT NULL DEFAULT '[]',
+    isos_json TEXT NOT NULL DEFAULT '[]',
     cleaned   INTEGER NOT NULL DEFAULT 0
 );
 
@@ -76,6 +77,11 @@ def init(db_path: Path) -> None:
         # Migration: add cleaned column to created_objects if missing
         try:
             con.execute("ALTER TABLE created_objects ADD COLUMN cleaned INTEGER NOT NULL DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass  # already exists
+        # Migration: add isos_json column to created_objects if missing
+        try:
+            con.execute("ALTER TABLE created_objects ADD COLUMN isos_json TEXT NOT NULL DEFAULT '[]'")
         except sqlite3.OperationalError:
             pass  # already exists
         # Security migration: purge any previously stored sensitive config keys
@@ -170,17 +176,19 @@ def upsert_created_objects(run_id: str, registry: dict) -> None:
     """Persist the created-objects registry in the dedicated table."""
     with _lock, _connect() as con:
         con.execute(
-            """INSERT INTO created_objects (run_id, vms_json, nics_json, tags_json)
-               VALUES (?, ?, ?, ?)
+            """INSERT INTO created_objects (run_id, vms_json, nics_json, tags_json, isos_json)
+               VALUES (?, ?, ?, ?, ?)
                ON CONFLICT(run_id) DO UPDATE SET
                    vms_json=excluded.vms_json,
                    nics_json=excluded.nics_json,
-                   tags_json=excluded.tags_json""",
+                   tags_json=excluded.tags_json,
+                   isos_json=excluded.isos_json""",
             (
                 run_id,
                 json.dumps(registry.get("vms", []), ensure_ascii=False),
                 json.dumps(registry.get("nics", []), ensure_ascii=False),
                 json.dumps(registry.get("tags", []), ensure_ascii=False),
+                json.dumps(registry.get("isos", []), ensure_ascii=False),
             ),
         )
 
@@ -189,7 +197,7 @@ def get_created_objects(run_id: str) -> dict:
     """Return the created-objects registry for a run, or an empty registry."""
     with _connect() as con:
         row = con.execute(
-            "SELECT vms_json, nics_json, tags_json, cleaned FROM created_objects WHERE run_id=?",
+            "SELECT vms_json, nics_json, tags_json, isos_json, cleaned FROM created_objects WHERE run_id=?",
             (run_id,),
         ).fetchone()
     if row:
@@ -198,11 +206,12 @@ def get_created_objects(run_id: str) -> dict:
                 "vms":     json.loads(row[0] or "[]"),
                 "nics":    json.loads(row[1] or "[]"),
                 "tags":    json.loads(row[2] or "[]"),
-                "cleaned": bool(row[3]),
+                "isos":    json.loads(row[3] or "[]"),
+                "cleaned": bool(row[4]),
             }
         except Exception:
             pass
-    return {"vms": [], "nics": [], "tags": [], "cleaned": False}
+    return {"vms": [], "nics": [], "tags": [], "isos": [], "cleaned": False}
 
 
 def mark_cleaned(run_id: str) -> None:

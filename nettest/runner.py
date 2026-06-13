@@ -132,7 +132,7 @@ def _run_phased_testing(
     placements_dict: Dict[Any, Any],
     bindings_dict: Dict[Any, Any],
     gateway_by_subnet: Dict[str, str],
-    created_registry: Dict[str, List[str]],
+    created_registry: Dict[str, List[Any]],
     persist_registry: Callable[[], None],
     all_vm_instances: List[Any],
     effective_guest_ssh_password: str,
@@ -180,6 +180,10 @@ def _run_phased_testing(
                 created_registry["vms"].append(moid)
                 persist_registry()
 
+            def _on_iso_created_phase(datacenter: str, ds_path: str) -> None:
+                created_registry["isos"].append({"datacenter": datacenter, "path": ds_path})
+                persist_registry()
+
             phase_vm_instances = provision_test_vms(
                 phase_rows,
                 placements_dict,
@@ -190,6 +194,8 @@ def _run_phased_testing(
                 gateway_by_subnet=gateway_by_subnet,
                 vms_per_subnet=phase.vms_per_subnet,
                 on_vm_created=_on_vm_created_phase,
+                on_iso_created=_on_iso_created_phase,
+                check_cancel=check_cancel,
             )
             all_vm_instances.extend(phase_vm_instances)
             logger.info("Provisioned %s VMs", len(phase_vm_instances))
@@ -246,7 +252,7 @@ def _run_classic_testing(
     placements_dict: Dict[Any, Any],
     bindings_dict: Dict[Any, Any],
     gateway_by_subnet: Dict[str, str],
-    created_registry: Dict[str, List[str]],
+    created_registry: Dict[str, List[Any]],
     persist_registry: Callable[[], None],
     all_vm_instances: List[Any],
     effective_guest_ssh_password: str,
@@ -267,6 +273,10 @@ def _run_classic_testing(
                 created_registry["vms"].append(moid)
                 persist_registry()
 
+            def _on_iso_created(datacenter: str, ds_path: str) -> None:
+                created_registry["isos"].append({"datacenter": datacenter, "path": ds_path})
+                persist_registry()
+
             vm_instances = provision_test_vms(
                 vm_rows,
                 placements_dict,
@@ -277,6 +287,8 @@ def _run_classic_testing(
                 gateway_by_subnet=gateway_by_subnet,
                 vms_per_subnet=cfg.vms_per_subnet,
                 on_vm_created=_on_vm_created,
+                on_iso_created=_on_iso_created,
+                check_cancel=check_cancel,
             )
             all_vm_instances.extend(vm_instances)
             logger.info("Provisioned %s test VMs", len(vm_instances))
@@ -335,7 +347,7 @@ def _build_result_payload(
     attempt_history: List[Dict[str, int]],
     phase_summaries: List[Dict[str, Any]],
     cleanup_result: Optional[Dict[str, Any]],
-    created_registry: Dict[str, List[str]],
+    created_registry: Dict[str, List[Any]],
 ) -> Dict[str, Any]:
     failed_results = [r for r in all_results if r.status != "pass"]
     success = len(failed_results) == 0
@@ -534,7 +546,7 @@ def execute_run(
         cfg.execute_vcenter,
     )
 
-    created_registry: Dict[str, List[str]] = {"vms": [], "nics": [], "tags": []}
+    created_registry: Dict[str, List[Any]] = {"vms": [], "nics": [], "tags": [], "isos": []}
 
     def _persist_registry() -> None:
         if objects_cb:
