@@ -41,6 +41,11 @@ logger = logging.getLogger(__name__)
 class SerialProbeSession:
     """Context manager that binds a TCP server on *port* and handles one VM session.
 
+    Pass a pre-bound socket via *pre_bound_sock* (returned by
+    :meth:`SerialProbeServer.alloc_port`) so the port is listening **before**
+    the VM is powered on — without this the VM's first TCP connection attempt
+    arrives before the server socket exists and the VM never retries.
+
     Usage::
 
         with SerialProbeSession(port=10042, connect_timeout=300) as sess:
@@ -50,32 +55,49 @@ class SerialProbeSession:
                 ...
     """
 
-    def __init__(self, port: int, connect_timeout: int = 300, io_timeout: int = 120):
+    def __init__(
+        self,
+        port: int,
+        connect_timeout: int = 300,
+        io_timeout: int = 120,
+        pre_bound_sock: Optional[socket.socket] = None,
+    ):
         self.port = port
         self.connect_timeout = connect_timeout
         self.io_timeout = io_timeout
-        self._server_sock: Optional[socket.socket] = None
+        # If a pre-bound socket is supplied we adopt it without re-binding.
+        self._server_sock: Optional[socket.socket] = pre_bound_sock
+        self._owns_server_sock: bool = pre_bound_sock is None
         self._client_sock: Optional[socket.socket] = None
         self._buf = b""
 
     def __enter__(self) -> "SerialProbeSession":
-        self._server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self._server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self._server_sock.bind(("", self.port))
-        self._server_sock.listen(1)
+        if self._owns_server_sock:
+            # No pre-bound socket — bind now (legacy / standalone usage).
+            self._server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self._server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self._server_sock.bind(("", self.port))
+            self._server_sock.listen(1)
+            logger.debug("Serial probe server listening on port %s", self.port)
+        assert self._server_sock is not None
         self._server_sock.settimeout(self.connect_timeout)
-        logger.debug("Serial probe server listening on port %s", self.port)
         return self
 
     def __exit__(self, *_: Any) -> None:
-        for s in (self._client_sock, self._server_sock):
-            if s is not None:
-                try:
-                    s.close()
-                except Exception:
-                    pass
-        self._client_sock = None
-        self._server_sock = None
+        if self._client_sock is not None:
+            try:
+                self._client_sock.close()
+            except Exception:
+                pass
+            self._client_sock = None
+        # Only close the server socket if we created it; pre-bound sockets are
+        # owned (and closed) by SerialProbeServer.
+        if self._owns_server_sock and self._server_sock is not None:
+            try:
+                self._server_sock.close()
+            except Exception:
+                pass
+            self._server_sock = None
 
     def accept(self) -> bool:
         """Wait for the VM to connect.  Returns True on success, False on timeout."""
@@ -139,13 +161,41 @@ class SerialProbeServer:
         self.base_port = base_port
         self._next_port = base_port
         self._lock = threading.Lock()
+        # port -> pre-bound listening socket (bound at alloc_port() time so the
+        # socket is ready before the VM is powered on)
+        self._pre_bound: Dict[int, socket.socket] = {}
 
     def alloc_port(self) -> int:
-        """Return the next free TCP port (not thread-safe across calls yet)."""
+        """Allocate the next TCP port and immediately bind a listening socket.
+
+        Binding here — before the VM is created and powered on — guarantees
+        the server is accepting connections by the time the VM boots and its
+        serial port tries to connect.  Without this the VM's first (and only)
+        connection attempt arrives before the socket exists and the timeout
+        fires with no chance of recovery.
+        """
         with self._lock:
             port = self._next_port
             self._next_port += 1
+        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        srv.bind(("", port))
+        srv.listen(1)
+        with self._lock:
+            self._pre_bound[port] = srv
+        logger.debug("Pre-bound serial probe port %s", port)
         return port
+
+    def close(self) -> None:
+        """Close all pre-bound sockets (call when the run is complete)."""
+        with self._lock:
+            socks, self._pre_bound = dict(self._pre_bound), {}
+        for port, srv in socks.items():
+            try:
+                srv.close()
+            except Exception:
+                pass
+            logger.debug("Closed pre-bound serial probe port %s", port)
 
     def run_subnet_probe(
         self,
@@ -189,7 +239,8 @@ class SerialProbeServer:
             targets = cfg.get("targets", [])
 
             try:
-                with SerialProbeSession(port, connect_timeout, io_timeout) as sess:
+                pre_bound = self._pre_bound.get(port)
+                with SerialProbeSession(port, connect_timeout, io_timeout, pre_bound_sock=pre_bound) as sess:
                     if not sess.accept():
                         errors[idx] = "serial-connect-timeout"
                         ready_events[idx].set()

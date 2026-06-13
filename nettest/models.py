@@ -45,6 +45,10 @@ class TestCase:
     # VM index within the subnet (for multi-VM intra-subnet scenarios)
     src_vm_index: int = 0
     dst_vm_index: int = 0
+    # Probe type: "icmp" (default) or "tcp"
+    probe_type: str = "icmp"
+    # TCP ports to probe when probe_type == "tcp" (empty = use port 80)
+    tcp_ports: List[int] = field(default_factory=list)
 
 
 @dataclass
@@ -76,6 +80,10 @@ class TestResult:
     phase: str = "intra-vrf"
     src_vm_index: int = 0
     dst_vm_index: int = 0
+    # Probe type used to produce this result
+    probe_type: str = "icmp"
+    # TCP port probed (0 = ICMP or multi-port summary)
+    tcp_port: int = 0
 
 
 @dataclass

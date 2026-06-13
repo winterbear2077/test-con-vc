@@ -703,6 +703,10 @@ def provision_test_vms(
                             from nettest.serial_probe import detect_controller_ip
                             _c_ip = detect_controller_ip(str(args.vcenter_host))
                         _s_port = serial_ports[vm_idx]
+                        logger.info(
+                            "Serial probe: ESXi will connect to %s:%s for VM %s",
+                            _c_ip, _s_port, vm_name,
+                        )
                     vm_obj = create_memboot_vm(
                         vim=vim, content=content,
                         vm_name=vm_name, host_obj=host_obj_for_vm,
@@ -715,6 +719,14 @@ def provision_test_vms(
                         serial_port=_s_port,
                     )
                     vm_needs_wait.append(False)  # memboot always uses protocol sync
+
+                if poll_method == "serial":
+                    try:
+                        fw = host_obj_for_vm.configManager.firewallSystem
+                        fw.EnableRuleset(id="remoteSerialPort")
+                        logger.info("ESXi firewall remoteSerialPort enabled on %s", host_obj_for_vm.name)
+                    except Exception as _fw_exc:
+                        logger.warning("Could not enable remoteSerialPort firewall on %s: %s", host_obj_for_vm.name, _fw_exc)
 
                 wait_for_task(vm_obj.PowerOnVM_Task())
                 logger.info(

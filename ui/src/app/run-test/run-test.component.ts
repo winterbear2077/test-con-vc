@@ -33,6 +33,7 @@ export class RunTestComponent implements OnDestroy {
   indicator: 'idle' | 'running' | 'pass' | 'fail' = 'idle';
   logLines: LogLine[] = [];
   result: any = null;
+  private _currentRunId: string | null = null;
 
   private _sse: EventSource | null = null;
   private _sseDone = false;
@@ -67,8 +68,16 @@ export class RunTestComponent implements OnDestroy {
       vrf_links: [],
     };
     this.api.startRun(req).subscribe({
-      next: ({ run_id }) => { this.appendLog('\u25B6 Run started: ' + run_id, 'hdr'); this.stream(run_id); },
+      next: ({ run_id }) => { this._currentRunId = run_id; this.appendLog('\u25B6 Run started: ' + run_id, 'hdr'); this.stream(run_id); },
       error: err => { this.appendLog('Error: ' + (err.error?.detail || err.message), 'err'); this.running = false; this.indicator = 'idle'; }
+    });
+  }
+
+  cancelRun() {
+    if (!this._currentRunId) return;
+    this.api.cancelRun(this._currentRunId).subscribe({
+      next: () => this.appendLog('\u25A0 Cancel requested…', 'warn'),
+      error: () => this.appendLog('Cancel request failed', 'err'),
     });
   }
 
@@ -84,8 +93,9 @@ export class RunTestComponent implements OnDestroy {
           this._sse!.close();
           const rc = parseInt(raw.split(':')[1]);
           this.running = false;
-          this.indicator = rc === 0 ? 'pass' : 'fail';
-          this.appendLog('\u25B6 Finished (exit ' + rc + ')', rc === 0 ? 'ok' : 'err');
+          this.indicator = rc === 0 ? 'pass' : (rc === 5 ? 'idle' : 'fail');
+          const label = rc === 5 ? 'Cancelled' : (rc === 0 ? 'PASS' : 'FAIL');
+          this.appendLog('\u25B6 Finished (exit ' + rc + ' — ' + label + ')', rc === 0 ? 'ok' : (rc === 5 ? 'warn' : 'err'));
           this.api.getRunResult(runId).subscribe({ next: r => this.result = r, error: () => {} });
           return;
         }
