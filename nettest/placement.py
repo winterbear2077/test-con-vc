@@ -18,12 +18,27 @@ def validate_vcenter_requirements(args: Any) -> None:
             missing.append("--vcenter-user")
         if not args.vcenter_password:
             missing.append("--vcenter-password")
-    if not args.ovf_path:
-        missing.append("--ovf-path")
+
+    boot_method = str(getattr(args, "boot_method", "ovf") or "ovf").strip().lower()
+    if boot_method == "ovf":
+        if not args.ovf_path:
+            missing.append("--ovf-path")
+    elif boot_method == "memboot":
+        if not str(getattr(args, "memboot_iso_path", "") or ""):
+            missing.append("--memboot-iso-path")
+    else:
+        raise RuntimeError(f"Unknown boot_method: {boot_method!r}. Use 'ovf' or 'memboot'.")
+
     if missing:
         raise RuntimeError("Missing required details for --execute-vcenter: " + ", ".join(missing))
-    if not os.path.isfile(str(args.ovf_path)):
+
+    if boot_method == "ovf" and not os.path.isfile(str(args.ovf_path)):
         raise RuntimeError(f"OVF template file not found: {args.ovf_path}")
+
+    if boot_method == "memboot":
+        iso = str(getattr(args, "memboot_iso_path", "") or "")
+        if iso and not iso.startswith("[") and not os.path.isfile(iso):
+            raise RuntimeError(f"memboot ISO file not found: {iso}")
 
 
 def _iter_clusters(folder: Any, vim: Any) -> Iterable[Any]:

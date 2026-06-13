@@ -1,6 +1,7 @@
 import { Injectable } from '@angular/core';
 import { HttpClient, HttpHeaders, HttpParams } from '@angular/common/http';
 import { Observable } from 'rxjs';
+import { tap } from 'rxjs/operators';
 import { PluginContextService } from './plugin-context.service';
 
 export interface AppConfig {
@@ -8,10 +9,11 @@ export interface AppConfig {
   vcenter_user?: string;
   vcenter_password?: string;
   ovf_path?: string;
+  boot_method?: 'ovf' | 'memboot' | string;
+  memboot_iso_path?: string;
   input?: string;
   resource_pool?: string;
   vm_prefix?: string;
-  [key: string]: any;
 }
 
 export interface PluginStatus {
@@ -52,7 +54,6 @@ export interface RunRequest {
   max_vms_per_phase?: number;
   phases?: string;
   vrf_links?: string[];
-  [key: string]: any;
 }
 
 export interface VrfRuleRow {
@@ -70,7 +71,8 @@ export interface HistoryEntry {
   passed?: number;
   failed?: number;
   total?: number;
-  [key: string]: any;
+  cleaned?: number;
+  vms_cleaned?: number;
 }
 
 @Injectable({ providedIn: 'root' })
@@ -78,20 +80,46 @@ export class ApiService {
   private base = '/api';
   /** Absolute base derived from <base href> so EventSource works inside vCenter iframes. */
   private absBase: string;
+  private sessionToken: string | null = null;
 
   constructor(private http: HttpClient, private plugin: PluginContextService) {
     // document.baseURI respects the <base href> tag (which web_app.py rewrites for plugin mode).
     // Strip trailing slash then append /api so EventSource uses the correct backend origin.
     const base = (document.baseURI || window.location.href).replace(/\/+$/, '');
     this.absBase = base + '/api';
+    if (typeof window !== 'undefined') {
+      this.sessionToken = window.sessionStorage.getItem('nettest_session_token');
+    }
   }
 
-  /** Returns headers including X-Vcenter-Session when in plugin mode and session is available. */
+  /** Returns headers including plugin session/host or standalone session token. */
   private sessionHeaders(): { headers?: HttpHeaders } {
-    if (this.plugin.isPlugin && this.plugin.sessionId) {
-      return { headers: new HttpHeaders({ 'X-Vcenter-Session': this.plugin.sessionId }) };
+    let headers = new HttpHeaders();
+    if (this.plugin.isPlugin) {
+      if (this.plugin.sessionId) {
+        headers = headers.set('X-Vcenter-Session', this.plugin.sessionId);
+      }
+      if (this.plugin.vcenterHost) {
+        headers = headers.set('X-Vcenter-Host', this.plugin.vcenterHost);
+      }
+    } else if (this.sessionToken) {
+      headers = headers.set('X-Session-Token', this.sessionToken);
+    }
+    if (headers.keys().length > 0) {
+      return { headers };
     }
     return {};
+  }
+
+  createSession(password: string): Observable<{ session_token: string }> {
+    return this.http.post<{ session_token: string }>(this.base + '/session', { vcenter_password: password }).pipe(
+      tap((r) => {
+        this.sessionToken = r.session_token;
+        if (typeof window !== 'undefined') {
+          window.sessionStorage.setItem('nettest_session_token', r.session_token);
+        }
+      })
+    );
   }
 
   getConfig(): Observable<AppConfig> { return this.http.get<AppConfig>(this.base + '/config'); }
@@ -101,6 +129,12 @@ export class ApiService {
     const fd = new FormData();
     for (let i = 0; i < files.length; i++) fd.append('files', files[i]);
     return this.http.post<{ path: string }>(this.base + '/upload/ovf', fd);
+  }
+
+  uploadIso(file: File): Observable<{ path: string }> {
+    const fd = new FormData();
+    fd.append('file', file);
+    return this.http.post<{ path: string }>(this.base + '/upload/iso', fd);
   }
 
   uploadInput(file: File): Observable<{ path: string }> {
@@ -138,6 +172,21 @@ export class ApiService {
 
   startRun(req: RunRequest): Observable<{ run_id: string }> {
     return this.http.post<{ run_id: string }>(this.base + '/run', req, this.sessionHeaders());
+  }
+
+  cancelRun(runId: string): Observable<{ ok: boolean; run_id?: string; detail?: string }> {
+    return this.http.post<{ ok: boolean; run_id?: string; detail?: string }>(
+      this.base + '/run/' + runId + '/cancel',
+      {},
+      this.sessionHeaders()
+    );
+  }
+
+  hasAuth(): boolean {
+    if (this.plugin.isPlugin) {
+      return !!(this.plugin.sessionId || this.plugin.cloneTicket);
+    }
+    return !!this.sessionToken;
   }
 
   /** Returns the absolute URL to use with EventSource (must be absolute to work in vCenter iframes). */

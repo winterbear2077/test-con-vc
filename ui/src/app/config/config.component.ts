@@ -47,10 +47,23 @@ export class ConfigComponent implements OnInit {
   }
 
   save() {
-    this.api.saveConfig(this.cfg).subscribe({
-      next: () => { this.saveMsg = '\u2713 Saved'; setTimeout(() => this.saveMsg = '', 3000); },
-      error: err => { this.saveMsg = '\u2717 ' + (err.error?.detail || err.message); }
-    });
+    const doSave = () => {
+      this.api.saveConfig(this.cfg).subscribe({
+        next: () => { this.saveMsg = '\u2713 Saved'; setTimeout(() => this.saveMsg = '', 3000); },
+        error: err => { this.saveMsg = '\u2717 ' + (err.error?.detail || err.message); }
+      });
+    };
+
+    const pwd = String(this.cfg.vcenter_password || '').trim();
+    if (!this.plugin.isPlugin && pwd) {
+      this.api.createSession(pwd).subscribe({
+        next: () => doSave(),
+        error: err => { this.saveMsg = '\u2717 Session failed: ' + (err.error?.detail || err.message); }
+      });
+      return;
+    }
+
+    doSave();
   }
 
   onOvfFiles(event: Event) {

@@ -4,6 +4,7 @@ import { FormsModule } from '@angular/forms';
 import { ClarityModule } from '@clr/angular';
 import { ApiService } from '../api.service';
 import { ResultPanelComponent } from '../result-panel/result-panel.component';
+import { PluginContextService } from '../plugin-context.service';
 
 interface LogLine { text: string; cls: string; }
 
@@ -38,7 +39,7 @@ export class RunTestComponent implements OnDestroy {
   private _sse: EventSource | null = null;
   private _sseDone = false;
 
-  constructor(private api: ApiService, private zone: NgZone) {}
+  constructor(private api: ApiService, private zone: NgZone, private pluginCtx: PluginContextService) {}
 
   ngOnDestroy() { this._sse?.close(); }
 
@@ -53,8 +54,19 @@ export class RunTestComponent implements OnDestroy {
     return p;
   }
 
-  startRun() {
+  async startRun() {
     if (this.intraSubnetWarn) return;
+
+    if (this.executeVcenter && this.pluginCtx.isPlugin && !this.api.hasAuth()) {
+      await this.pluginCtx.waitForSession(3000);
+    }
+
+    if (this.executeVcenter && !this.api.hasAuth()) {
+      this.appendLog('Error: missing vCenter auth. Save credentials in Config first (or wait for plugin session).', 'err');
+      this.indicator = 'idle';
+      return;
+    }
+
     this.running = true; this.result = null; this.logLines = []; this.indicator = 'running';
     const req = {
       execute_vcenter: this.executeVcenter,

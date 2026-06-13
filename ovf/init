@@ -2,7 +2,10 @@
 # /init — PID 1 inside the nettest mini-ISO initramfs.
 #
 # Mounts essential filesystems, loads VMware vmci/vsock modules when present,
-# then execs netprobe which owns the rest of the boot (networking + probe protocol).
+# then starts netprobe which owns the rest of the boot (networking + probe protocol).
+#
+# IMPORTANT: PID 1 must never exit. If netprobe exits, kernel will panic with
+# "Attempted to kill init". Keep init alive in a rescue path for diagnostics.
 
 mount -t proc     proc     /proc
 mount -t sysfs    sysfs    /sys
@@ -23,4 +26,22 @@ for mod in vmw_vmci vsock vmw_vsock_vmci_transport; do
     [ -f "$ko" ] && insmod "$ko" 2>/dev/null || true
 done
 
-exec /usr/local/bin/netprobe
+PROBE="/usr/local/bin/netprobe"
+
+if [ ! -x "$PROBE" ]; then
+    echo "[init] FATAL: $PROBE not found/executable" >/dev/console
+    if [ -x /bin/sh ]; then
+        exec /bin/sh
+    fi
+    while true; do sleep 3600; done
+fi
+
+"$PROBE"
+rc=$?
+echo "[init] netprobe exited rc=$rc; entering rescue mode" >/dev/console
+
+if [ -x /bin/sh ]; then
+    exec /bin/sh
+fi
+
+while true; do sleep 3600; done

@@ -9,10 +9,11 @@ import threading
 import traceback
 from datetime import datetime, timezone
 from typing import List
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
-from fastapi import APIRouter, HTTPException, Header
+from fastapi import APIRouter, HTTPException, Header, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -22,6 +23,18 @@ from nettest.vcenter_utils import connect_vcenter_auto, disconnect_vcenter, get_
 from nettest.api.deps import WORKSPACE, ARTIFACTS, _runs, _read_config, get_session_password
 
 router = APIRouter()
+
+
+def _header_host(value: str) -> str:
+    s = (value or "").strip()
+    if not s:
+        return ""
+    if "://" not in s:
+        s = "//" + s
+    try:
+        return str(urlparse(s).hostname or "").strip()
+    except Exception:
+        return ""
 
 
 # ── Run model ─────────────────────────────────────────────────────────────────
@@ -46,7 +59,7 @@ class RunIn(BaseModel):
 
 
 @router.post("/api/run")
-def api_start_run(req: RunIn, x_vcenter_session: str = Header(default=""), x_vcenter_host: str = Header(default=""), x_session_token: str = Header(default="")):
+def api_start_run(req: RunIn, request: Request, x_vcenter_session: str = Header(default=""), x_vcenter_host: str = Header(default=""), x_session_token: str = Header(default="")):
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     q: _queue.Queue = _queue.Queue()
     cancel_event = threading.Event()
@@ -57,6 +70,11 @@ def api_start_run(req: RunIn, x_vcenter_session: str = Header(default=""), x_vce
     # Plugin mode: session header supplied — host/credentials may come from headers
     session_id = x_vcenter_session.strip()
     vc_host = str(cfg_dict.get("vcenter_host", "")).strip() or x_vcenter_host.strip()
+    if not vc_host and session_id:
+        vc_host = (
+            _header_host(request.headers.get("referer", ""))
+            or _header_host(request.headers.get("origin", ""))
+        )
     vc_user = "" if session_id else str(cfg_dict.get("vcenter_user", "")).strip()
     vc_pass = "" if session_id else get_session_password(x_session_token.strip())
 
@@ -177,7 +195,7 @@ def api_cancel_run(run_id: str):
 
 
 @router.post("/api/run/{run_id}/cleanup")
-def api_cleanup_run(run_id: str, x_vcenter_session: str = Header(default=""), x_vcenter_host: str = Header(default=""), x_session_token: str = Header(default="")):
+def api_cleanup_run(run_id: str, request: Request, x_vcenter_session: str = Header(default=""), x_vcenter_host: str = Header(default=""), x_session_token: str = Header(default="")):
     """Delete all VMs recorded in the created_objects table for a run."""
     registry = _db.get_created_objects(run_id)
     if registry.get("cleaned"):
@@ -191,6 +209,11 @@ def api_cleanup_run(run_id: str, x_vcenter_session: str = Header(default=""), x_
     session_id       = x_vcenter_session.strip()
     # In plugin mode the host may arrive via X-Vcenter-Host header; fall back to config
     vcenter_host     = str(cfg.get("vcenter_host", "")).strip() or x_vcenter_host.strip()
+    if not vcenter_host and session_id:
+        vcenter_host = (
+            _header_host(request.headers.get("referer", ""))
+            or _header_host(request.headers.get("origin", ""))
+        )
     vcenter_user     = "" if session_id else str(cfg.get("vcenter_user", "")).strip()
     vcenter_password = "" if session_id else get_session_password(x_session_token.strip())
     vm_prefix        = cfg.get("vm_prefix", "nettest")
