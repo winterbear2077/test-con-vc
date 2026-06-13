@@ -19,6 +19,16 @@ def _ping_once(ip_addr: str, timeout_sec: int) -> bool:
     return proc.returncode == 0
 
 
+def _tcp_connect_once(ip_addr: str, port: int, timeout_sec: int) -> bool:
+    """Try one TCP connect to ip:port.  Returns True on successful handshake."""
+    import socket
+    try:
+        with socket.create_connection((ip_addr, port), timeout=timeout_sec):
+            return True
+    except OSError:
+        return False
+
+
 def _guest_ops_ping(
     si: Any,
     vm_obj: Any,
@@ -76,6 +86,63 @@ def _guest_ops_ping(
 
     except Exception as exc:
         logger.warning("Guest Ops ping failed (-> %s): %s", target_ip, exc)
+        return None
+
+
+def _guest_ops_tcp_connect(
+    si: Any,
+    vm_obj: Any,
+    target_ip: str,
+    ports: List[int],
+    username: str,
+    password: str,
+    timeout_sec: int = 10,
+) -> Optional[bool]:
+    """Run 'nc -z <ip> <port>' inside a VM via VMware Guest Operations API.
+
+    Tries each port in order; returns True as soon as any port succeeds.
+    Returns False if all ports are blocked, None if Guest Operations itself failed.
+    Alpine busybox nc supports the -z flag (scan mode, no data transfer).
+    """
+    try:
+        from pyVmomi import vim  # type: ignore
+    except ImportError:
+        return None
+
+    if not ports:
+        ports = [80]
+
+    try:
+        creds = vim.vm.guest.NamePasswordAuthentication(
+            username=username,
+            password=password,
+        )
+        pm = si.content.guestOperationsManager.processManager
+
+        for port in ports:
+            prog_spec = vim.vm.guest.ProcessManager.ProgramSpec(
+                programPath="/bin/nc",
+                arguments=f"-z -w {max(timeout_sec, 1)} {target_ip} {port}",
+                workingDirectory="/tmp",
+            )
+            try:
+                pid = pm.StartProgramInGuest(vm_obj, creds, prog_spec)
+            except Exception:
+                continue
+
+            deadline = time.time() + timeout_sec + 5
+            while time.time() < deadline:
+                procs = pm.ListProcessesInGuest(vm_obj, creds, [pid])
+                if procs and procs[0].exitCode is not None:
+                    if procs[0].exitCode == 0:
+                        return True
+                    break  # port failed, try next
+                time.sleep(1)
+
+        return False
+
+    except Exception as exc:
+        logger.warning("Guest Ops TCP connect failed (-> %s): %s", target_ip, exc)
         return None
 
 
@@ -174,8 +241,8 @@ def run_icmp_checks(
         ]
 
     if probe_mode == "controller-gateway":
-        # Ping from local controller to target gateways
-        ping_cache: Dict[str, bool] = {}
+        # Ping (or TCP connect) from local controller to target gateways
+        probe_cache: Dict[str, bool] = {}
         results: List[TestResult] = []
         for case in cases:
             dst_gw = gateway_by_subnet.get(case.dst_subnet, "")
@@ -184,12 +251,25 @@ def run_icmp_checks(
                 status = "fail"
                 reason = "missing-dst-gateway"
             else:
-                if dst_gw not in ping_cache:
-                    ping_cache[dst_gw] = _ping_once(dst_gw, timeout_sec)
-                ok: Optional[bool] = ping_cache[dst_gw]
+                case_probe_type = getattr(case, "probe_type", "icmp")
+                case_tcp_ports  = getattr(case, "tcp_ports",  [])
+                cache_key = f"{dst_gw}|{case_probe_type}|{','.join(map(str, case_tcp_ports))}"
+                if cache_key not in probe_cache:
+                    if case_probe_type == "tcp":
+                        ports = case_tcp_ports or [80]
+                        probe_cache[cache_key] = any(
+                            _tcp_connect_once(dst_gw, p, timeout_sec) for p in ports
+                        )
+                        reason_label = f"controller-tcp-to-dst-gw(ports={ports})"
+                    else:
+                        probe_cache[cache_key] = _ping_once(dst_gw, timeout_sec)
+                        reason_label = "controller-icmp-to-dst-gw"
+                else:
+                    reason_label = "controller-cached"
+                ok: Optional[bool] = probe_cache[cache_key]
                 actual = "PASS" if ok else "FAIL"
                 status = "pass" if actual == case.expected else "fail"
-                reason = "controller-icmp-to-dst-gw"
+                reason = reason_label
 
             results.append(TestResult(
                 src_subnet=case.src_subnet,
@@ -319,8 +399,13 @@ def run_icmp_checks(
 
             ok = None
             probe_reason = "unknown"
+            case_probe_type = getattr(case, "probe_type", "icmp")
+            case_tcp_ports  = getattr(case, "tcp_ports",  [])
 
-            # Primary: guestinfo results written by netprobe.start inside the VM.
+            # Primary: results pre-collected during provisioning by the probe
+            # protocol (serial/vsock) or read from guestinfo extraConfig.
+            # provisioning.py Phase 4 populates VMInstance.probe_results for
+            # all poll_method values; probe.py just reads them here.
             probe_results = getattr(src_vm, "probe_results", None) or {}
             if probe_results:
                 result_str = probe_results.get(probe_ip)
@@ -328,22 +413,29 @@ def run_icmp_checks(
                     ok = True
                 elif result_str == "FAIL":
                     ok = False
-                probe_reason = f"{poll_method}-icmp-from-src-vm"
+                probe_reason = f"{poll_method}-{case_probe_type}-from-src-vm"
 
-            # Fallback: Guest Ops ICMP when guestinfo gave no result.
-            # SSH is not used (not available on the Alpine OVF build).
-            # Serial/vsock channels deliver results directly; no fallback needed.
+            # Fallback: Guest Ops when guestinfo gave no result.
             if ok is None and use_guest_ops and poll_method == "guestinfo":
                 vm_obj = _find_vm_by_moid(vcenter_si, src_vm.moid)
                 if vm_obj is not None:
-                    ok = _guest_ops_ping(
-                        si=vcenter_si, vm_obj=vm_obj, target_ip=probe_ip,
-                        username=guest_ssh_user, password=guest_ssh_password,
-                        timeout_sec=timeout_sec,
-                    )
-                    probe_reason = "guest-ops-icmp-from-src-vm"
+                    if case_probe_type == "tcp":
+                        ok = _guest_ops_tcp_connect(
+                            si=vcenter_si, vm_obj=vm_obj, target_ip=probe_ip,
+                            ports=case_tcp_ports,
+                            username=guest_ssh_user, password=guest_ssh_password,
+                            timeout_sec=timeout_sec,
+                        )
+                        probe_reason = "guest-ops-tcp-from-src-vm"
+                    else:
+                        ok = _guest_ops_ping(
+                            si=vcenter_si, vm_obj=vm_obj, target_ip=probe_ip,
+                            username=guest_ssh_user, password=guest_ssh_password,
+                            timeout_sec=timeout_sec,
+                        )
+                        probe_reason = "guest-ops-icmp-from-src-vm"
                 else:
-                    logger.warning("VM %s not found via vCenter for Guest Ops ping", src_vm.moid)
+                    logger.warning("VM %s not found via vCenter for Guest Ops probe", src_vm.moid)
 
             if ok is None:
                 actual = "UNKNOWN"
@@ -364,6 +456,7 @@ def run_icmp_checks(
                 phase=case_phase,
                 src_vm_index=src_vm_idx,
                 dst_vm_index=dst_vm_idx,
+                probe_type=case_probe_type,
             ))
 
         return results

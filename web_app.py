@@ -20,7 +20,7 @@ logging.basicConfig(
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 import nettest.db as _db
@@ -40,13 +40,30 @@ _db.migrate_networks_from_csv(WORKSPACE / "input.csv")
 # ── App ───────────────────────────────────────────────────────────────────────
 app = FastAPI(title="vCenter Network Test")
 
+# allow_origin_regex=".*" echoes the request's Origin header back, which is
+# required when allow_credentials=True (the CORS spec forbids wildcard + credentials).
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origin_regex=r".*",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ── Ensure CORS headers are present even on unhandled 500 responses ───────────
+# FastAPI's default exception handler bypasses the CORS middleware, so cross-origin
+# callers (e.g. the vCenter plugin iframe) would receive a CORS-blocked error page.
+@app.exception_handler(Exception)
+async def _global_exception_handler(request: Request, exc: Exception):
+    origin = request.headers.get("origin", "")
+    headers = {"Access-Control-Allow-Origin": origin or "*"} if origin else {}
+    logging.getLogger(__name__).exception("Unhandled error: %s", exc)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": str(exc)},
+        headers=headers,
+    )
 
 app.include_router(routes_config.router)
 app.include_router(routes_networks.router)

@@ -2,6 +2,7 @@ import { Component, OnInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { ClarityModule } from '@clr/angular';
+import { forkJoin } from 'rxjs';
 import { ApiService, VrfRuleRow } from '../api.service';
 
 export interface VrfRule {
@@ -28,8 +29,15 @@ export class VrfRulesComponent implements OnInit {
   constructor(private api: ApiService) {}
 
   ngOnInit() {
-    this.api.getVrfRules().subscribe({
-      next: res => {
+    forkJoin({
+      rules: this.api.getVrfRules(),
+      input: this.api.getInput(),
+    }).subscribe({
+      next: ({ rules: res, input: r }) => {
+        // Populate vrfOptions first so the <select> renders with the correct
+        // options before rule rows are added, avoiding the race condition where
+        // the select defaults to the first option instead of the saved value.
+        this.vrfOptions = [...new Set(r.rows.map(row => row['vrf'] || '').filter(Boolean))].sort();
         this.rules = res.rules.map(r => ({
           id: this._nextId++,
           fromVrf: r.from_vrf,
@@ -38,10 +46,6 @@ export class VrfRulesComponent implements OnInit {
           comment: r.comment,
         }));
       },
-      error: () => {}
-    });
-    this.api.getInput().subscribe({
-      next: r => { this.vrfOptions = [...new Set(r.rows.map(row => row['vrf'] || '').filter(Boolean))].sort(); },
       error: () => {}
     });
   }

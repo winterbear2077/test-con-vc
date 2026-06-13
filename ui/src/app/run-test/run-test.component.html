@@ -51,6 +51,9 @@
           <button class="btn btn-success" (click)="startRun()" [disabled]="running || intraSubnetWarn">
             <clr-icon shape="play" size="14"></clr-icon> Start Run
           </button>
+          <button class="btn btn-danger-outline btn-sm" (click)="cancelRun()" *ngIf="running">
+            <clr-icon shape="stop" size="14"></clr-icon> Cancel
+          </button>
           <span *ngIf="indicator==='running'" style="color:#0079b8">
             <clr-spinner clrInline></clr-spinner> Running...
           </span>

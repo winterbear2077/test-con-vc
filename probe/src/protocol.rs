@@ -10,6 +10,7 @@ use serde_json::{json, Value};
 use crate::icmp::run_pings;
 use crate::log::log;
 use crate::netconfig::configure_network;
+use crate::tcp::run_tcp_connects;
 
 // ── Serial / vsock channel ────────────────────────────────────────────────────
 
@@ -67,8 +68,19 @@ pub fn run_probe_protocol(
         }
     };
 
-    let results = run_pings(logf, &targets);
-    let reply   = json!({"status":"done","results": results}).to_string();
+    // Probe type and optional TCP ports
+    let probe_type = msg1["probe_type"].as_str().unwrap_or("icmp").to_string();
+    let tcp_ports: Vec<u16> = msg1["tcp_ports"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|v| v.as_u64().map(|n| n as u16)).collect())
+        .unwrap_or_default();
+
+    let results = if probe_type == "tcp" {
+        run_tcp_connects(logf, &targets, &tcp_ports)
+    } else {
+        run_pings(logf, &targets)
+    };
+    let reply = json!({"status":"done","results": results}).to_string();
     log(logf, &format!("  TX: {}", reply));
     writeln!(writer, "{}", reply)?;
     writer.flush()?;
@@ -132,7 +144,20 @@ pub fn run_guestinfo_probe(logf: &mut dyn Write) -> io::Result<()> {
                 .collect()
         });
 
-    let results = run_pings(logf, &targets);
+    let probe_type  = vmget("guestinfo.nettest.probe_type");
+    let ports_raw   = vmget("guestinfo.nettest.tcp_ports");
+    let tcp_ports: Vec<u16> = ports_raw
+        .split(',')
+        .filter_map(|s| s.trim().parse().ok())
+        .collect();
+
+    let results = if probe_type == "tcp" {
+        log(logf, &format!("  probe_type=tcp ports={:?}", tcp_ports));
+        run_tcp_connects(logf, &targets, &tcp_ports)
+    } else {
+        log(logf, "  probe_type=icmp");
+        run_pings(logf, &targets)
+    };
     let results_json = serde_json::to_string(&results).unwrap_or_else(|_| "{}".to_string());
     vmset("guestinfo.nettest.results", &results_json);
     vmset("guestinfo.nettest.status", "done");

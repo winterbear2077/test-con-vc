@@ -3,6 +3,7 @@ import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { ClarityModule } from '@clr/angular';
 import { ApiService, NetworkRow, VcInventory } from '../api.service';
+import { PluginContextService } from '../plugin-context.service';
 
 interface EditableRow extends NetworkRow { _mngt?: boolean; }
 
@@ -20,15 +21,12 @@ export class InputNetworksComponent implements OnInit {
   syncing = false;
   importing = false;
 
-  constructor(private api: ApiService) {}
+  constructor(private api: ApiService, private pluginCtx: PluginContextService) {}
 
   ngOnInit() {
     this.load();
-    // Only auto-fetch if credentials are already available (plugin session or saved session token).
-    // Otherwise the user must save the config first, then click Sync manually.
-    if (this.api.hasAuth()) {
-      this.syncInventory();
-    }
+    // Delegate entirely to syncInventory() — it knows how to wait for the plugin session.
+    this.syncInventory();
   }
 
   load() {
@@ -38,8 +36,31 @@ export class InputNetworksComponent implements OnInit {
     });
   }
 
-  syncInventory() {
+  async syncInventory() {
     this.syncing = true;
+    this.msg = '';
+
+    // In plugin mode, wait for the vsphereClient SDK to inject the session token
+    // (it arrives asynchronously after the iframe is ready — typically < 1 s but
+    // can take longer on slower vCenter hosts).
+    if (this.pluginCtx.isPlugin && !this.api.hasAuth()) {
+      await this.pluginCtx.waitForSession(3000);
+    }
+
+    // Guard: still no credentials after waiting — surface a clear, actionable message
+    // instead of letting the server return a raw 401 JSON body.
+    if (!this.api.hasAuth()) {
+      this.syncing = false;
+      if (this.pluginCtx.isPlugin) {
+        this.msg =
+          '✗ No vCenter session detected. ' +
+          'Open the plugin server URL directly, save credentials in Config, then refresh this page.';
+      } else {
+        this.msg = '✗ Please save your vCenter credentials in the Config page first.';
+      }
+      return;
+    }
+
     this.api.getInventory().subscribe({
       next: inv => {
         this.inventory = inv; this.syncing = false;
@@ -47,7 +68,11 @@ export class InputNetworksComponent implements OnInit {
         this.msg = '✓ Loaded ' + (inv.datacenters || []).length + ' DC(s) from vCenter';
         setTimeout(() => this.msg = '', 4000);
       },
-      error: err => { this.syncing = false; this.msg = '✗ Sync failed: ' + (err.error?.detail || err.message); }
+      error: err => {
+        this.syncing = false;
+        const detail: string = err.error?.detail || err.message || 'Unknown error';
+        this.msg = '✗ Sync failed: ' + detail;
+      }
     });
   }
 

@@ -240,6 +240,8 @@ def write_probe_guestinfo(
     gateway: str,
     targets: List[str],
     ready: str = "wait",
+    probe_type: str = "icmp",
+    tcp_ports: Optional[List[int]] = None,
 ) -> None:
     """Write probe parameters into VM extraConfig (guestinfo keys) via ReconfigVM_Task.
 
@@ -251,17 +253,23 @@ def write_probe_guestinfo(
     `ready` controls the probe trigger:
       "wait"  — VM will configure network then block until ready changes to "go"
       "go"    — VM will proceed immediately (use for cross-subnet VMs with no peers)
+
+    `probe_type` is forwarded to the in-VM netprobe binary ("icmp" or "tcp").
+    `tcp_ports` is a list of ports to try when probe_type is "tcp" (empty = [80]).
     """
     from nettest.vcenter_utils import wait_for_task
 
+    ports_str = ",".join(str(p) for p in (tcp_ports or [])) if probe_type == "tcp" else ""
     extra = [
-        vim.option.OptionValue(key="guestinfo.nettest.ip",      value=ip_address),
-        vim.option.OptionValue(key="guestinfo.nettest.prefix",  value=str(prefix_len)),
-        vim.option.OptionValue(key="guestinfo.nettest.gw",      value=gateway),
-        vim.option.OptionValue(key="guestinfo.nettest.targets", value=",".join(targets)),
-        vim.option.OptionValue(key="guestinfo.nettest.ready",   value=ready),
-        vim.option.OptionValue(key="guestinfo.nettest.status",  value="pending"),
-        vim.option.OptionValue(key="guestinfo.nettest.results", value=""),
+        vim.option.OptionValue(key="guestinfo.nettest.ip",         value=ip_address),
+        vim.option.OptionValue(key="guestinfo.nettest.prefix",     value=str(prefix_len)),
+        vim.option.OptionValue(key="guestinfo.nettest.gw",         value=gateway),
+        vim.option.OptionValue(key="guestinfo.nettest.targets",    value=",".join(targets)),
+        vim.option.OptionValue(key="guestinfo.nettest.ready",      value=ready),
+        vim.option.OptionValue(key="guestinfo.nettest.status",     value="pending"),
+        vim.option.OptionValue(key="guestinfo.nettest.results",    value=""),
+        vim.option.OptionValue(key="guestinfo.nettest.probe_type", value=probe_type),
+        vim.option.OptionValue(key="guestinfo.nettest.tcp_ports",  value=ports_str),
     ]
     spec = vim.vm.ConfigSpec()
     spec.extraConfig = extra
@@ -485,8 +493,7 @@ def add_serial_port_tcp(
 
     backing = vim.vm.device.VirtualSerialPort.URIBackingInfo()
     backing.serviceURI = f"tcp://{controller_ip}:{port}"
-    backing.direction = "client"  # VM connects outbound to controller
-    backing.proxyURI = ""
+    backing.direction = "client"  # ESXi connects outbound to the controller
     serial.backing = backing
     serial.yieldOnPoll = True
 

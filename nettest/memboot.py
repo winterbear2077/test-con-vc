@@ -219,14 +219,13 @@ def create_memboot_vm(
         serial_backing                 = vim.vm.device.VirtualSerialPort.URIBackingInfo()
         serial_backing.serviceURI      = f"tcp://{controller_ip}:{serial_port}"
         serial_backing.direction       = "client"
-        serial_backing.proxyURI        = ""
         serial_dev.backing             = serial_backing
         serial_dev.yieldOnPoll         = True
         serial_spec                    = vim.vm.device.VirtualDeviceSpec()
         serial_spec.operation          = vim.vm.device.VirtualDeviceSpec.Operation.add
         serial_spec.device             = serial_dev
         devices.append(serial_spec)
-        logger.debug("Adding serial port TCP client -> %s:%s", controller_ip, serial_port)
+        logger.info("Serial port: TCP client -> %s:%s", controller_ip, serial_port)
 
     # VMCI device — only for vsock poll_method
     if poll_method == "vsock":

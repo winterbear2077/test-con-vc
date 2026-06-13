@@ -26,6 +26,34 @@ def connect_vcenter(args: Any) -> Any:
     )
 
 
+def connect_vcenter_with_clone_ticket(host: str, clone_ticket: str) -> Any:
+    """Establish a vCenter session by cloning via a one-time ticket.
+
+    This is the Broadcom-recommended "delegate session authority" flow for remote plugins:
+      1. Frontend loads the vSphere Client SDK from the vCenter host.
+      2. Frontend calls vsphereClient.auth.acquireCloneTicket() → one-time ticket string.
+      3. Frontend passes the ticket to the plugin backend (X-Vcenter-Clone-Ticket header).
+      4. Backend calls SessionManager.CloneSession(ticket) → vCenter responds with a
+         Set-Cookie that authenticates the stub for all subsequent SOAP calls.
+
+    The clone ticket is short-lived and single-use; calling CloneSession consumes it.
+    """
+    try:
+        from pyVim import connect as _connect
+        from pyVmomi import vim
+    except ImportError as exc:
+        raise RuntimeError("pyvmomi is required. Install: pip install pyvmomi") from exc
+
+    ssl_ctx = ssl._create_unverified_context()
+    stub = _connect.SoapStubAdapter(host=host, port=443, sslContext=ssl_ctx)
+    si = vim.ServiceInstance("ServiceInstance", stub)
+    # CloneSession() authenticates the stub — vCenter sets vmware_soap_session cookie
+    # in the SOAP response and pyVmomi captures it for all subsequent calls.
+    si.content.sessionManager.CloneSession(clone_ticket)
+    atexit.register(_connect.Disconnect, si)
+    return si
+
+
 def connect_vcenter_with_session(host: str, soap_session_id: str) -> Any:
     """Connect to vCenter by reusing an existing SOAP session cookie.
 
@@ -158,3 +186,33 @@ def vcenter_session(args: Any):
         yield si
     finally:
         disconnect_vcenter(si)
+
+
+def enable_esxi_firewall_ruleset(si: Any, ruleset_id: str = "remoteSerialPort") -> Dict[str, Any]:
+    """Enable a firewall ruleset on every connected ESXi host visible to *si*.
+
+    Returns a dict mapping host name -> "ok" | error message.
+    """
+    try:
+        from pyVmomi import vim
+    except ImportError as exc:
+        raise RuntimeError("pyvmomi is required") from exc
+
+    results: Dict[str, Any] = {}
+    content = si.content
+    view = content.viewManager.CreateContainerView(content.rootFolder, [vim.HostSystem], True)
+    try:
+        hosts = list(view.view)
+    finally:
+        view.Destroy()
+
+    for host in hosts:
+        name = str(getattr(host, "name", "unknown"))
+        try:
+            fw = host.configManager.firewallSystem
+            fw.EnableRuleset(id=ruleset_id)
+            results[name] = "ok"
+        except Exception as exc:
+            results[name] = str(exc)
+
+    return results

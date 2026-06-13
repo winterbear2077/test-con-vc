@@ -49,7 +49,8 @@ class RunIn(BaseModel):
 def api_start_run(req: RunIn, x_vcenter_session: str = Header(default=""), x_vcenter_host: str = Header(default=""), x_session_token: str = Header(default="")):
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     q: _queue.Queue = _queue.Queue()
-    _runs[run_id] = {"queue": q, "returncode": None}
+    cancel_event = threading.Event()
+    _runs[run_id] = {"queue": q, "returncode": None, "cancel_event": cancel_event}
     _db.insert_run(run_id, run_id)
 
     cfg_dict = _read_config()
@@ -75,7 +76,7 @@ def api_start_run(req: RunIn, x_vcenter_session: str = Header(default=""), x_vce
                 phases=req.phases,
                 vrf_links=list(req.vrf_links),
                 poll_method=req.poll_method,
-                serial_probe_host=req.serial_probe_host,
+                serial_probe_host=req.serial_probe_host or str(cfg_dict.get("serial_probe_host", "") or ""),
                 serial_base_port=req.serial_base_port,
                 vsock_base_port=req.vsock_base_port,
                 boot_method=req.boot_method or str(cfg_dict.get("boot_method", "ovf") or "ovf"),
@@ -88,12 +89,22 @@ def api_start_run(req: RunIn, x_vcenter_session: str = Header(default=""), x_vce
                 ovf_path=str(cfg_dict.get("ovf_path", "") or ""),
                 vm_prefix=str(cfg_dict.get("vm_prefix", "nettest") or "nettest"),
             )
+            # memboot VMs have no vmtoolsd — mirror the CLI auto-switch:
+            # guestinfo is incompatible with memboot; use serial instead.
+            if cfg.boot_method == "memboot" and cfg.poll_method == "guestinfo":
+                logger.warning(
+                    "boot_method=memboot with poll_method=guestinfo is not supported "
+                    "(no vmtoolsd in the memboot initramfs); switching to poll_method=serial"
+                )
+                cfg.poll_method = "serial"
+
             rc = execute_run(
                 cfg,
                 log_cb=lambda line: q.put(line),
                 result_cb=lambda r: _db.finish_run(run_id, r),
                 error_cb=lambda e: _db.finish_run_error(run_id, e),
                 objects_cb=lambda reg: _db.upsert_created_objects(run_id, reg),
+                cancel_event=cancel_event,
             )
         except Exception as exc:
             tb = traceback.format_exc()
@@ -147,6 +158,22 @@ def api_get_result(run_id: str):
     if data:
         return data
     raise HTTPException(404, "Result not found")
+
+
+@router.post("/api/run/{run_id}/cancel")
+def api_cancel_run(run_id: str):
+    """Signal a running test to stop gracefully after the current step."""
+    run = _runs.get(run_id)
+    if run is None:
+        raise HTTPException(404, "Run not found")
+    if run.get("returncode") is not None:
+        return {"ok": False, "detail": "run already finished"}
+    ev: threading.Event | None = run.get("cancel_event")
+    if ev is None:
+        raise HTTPException(500, "cancel_event missing for this run")
+    ev.set()
+    logger.info("Cancel requested for run %s", run_id)
+    return {"ok": True, "run_id": run_id}
 
 
 @router.post("/api/run/{run_id}/cleanup")
