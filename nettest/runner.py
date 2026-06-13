@@ -121,12 +121,20 @@ class RunCancelledError(Exception):
     """Raised internally when a cancel signal is received."""
 
 
+import threading as _threading
+
+
+class RunCancelledError(Exception):
+    """Raised internally when a cancel signal is received."""
+
+
 def execute_run(
     cfg: RunConfig,
     log_cb: Optional[Callable[[str], None]] = None,
     result_cb: Optional[Callable[[Dict], None]] = None,
     error_cb: Optional[Callable[[Dict], None]] = None,
     objects_cb: Optional[Callable[[Dict], None]] = None,
+    cancel_event: Optional[_threading.Event] = None,
     cancel_event: Optional[_threading.Event] = None,
 ) -> int:
     """Run the network test with the given RunConfig.
@@ -136,9 +144,17 @@ def execute_run(
     error_cb(error)     — called with error dict on failure
     objects_cb(registry) — called whenever created-objects registry changes
     cancel_event        — set this event to interrupt the run gracefully
+    cancel_event        — set this event to interrupt the run gracefully
     Returns process-style exit code: 0=PASS, 1=FAIL, 2=input-error,
     3=not-implemented, 4=unhandled-error, 5=cancelled.
+    3=not-implemented, 4=unhandled-error, 5=cancelled.
     """
+    _cancel = cancel_event or _threading.Event()
+
+    def _check_cancel(label: str = "") -> None:
+        if _cancel.is_set():
+            raise RunCancelledError(label or "run cancelled by user")
+
     _cancel = cancel_event or _threading.Event()
 
     def _check_cancel(label: str = "") -> None:
@@ -170,8 +186,12 @@ def execute_run(
         raw_rows = load_input(input_path)
         input_source = str(input_path)
 
+    _serial_srv = None
+    _vsock_srv  = None
+
     try:
         effective_guest_ssh_password = "nettest-alpine"
+        all_vm_instances: List = []  # declared early so cancel handler can clean up
         all_vm_instances: List = []  # declared early so cancel handler can clean up
 
         if cfg.execute_vcenter:
@@ -242,6 +262,7 @@ def execute_run(
             for phase in phases:
                 if not phase.cases:
                     continue
+                _check_cancel(f"before phase {phase.phase_id}")
                 _check_cancel(f"before phase {phase.phase_id}")
                 sep = "=" * 60
                 logger.info("")
@@ -333,6 +354,7 @@ def execute_run(
             for attempt in range(cfg.max_retries + 1):
                 if not current_cases:
                     break
+                _check_cancel(f"before attempt {attempt}")
                 _check_cancel(f"before attempt {attempt}")
                 attempt_results = run_icmp_checks(
                     current_cases,
@@ -449,6 +471,19 @@ def execute_run(
         _teardown_log_cb(_log_handler)
         return 0 if success else 1
 
+    except RunCancelledError as exc:
+        err = {"error": str(exc), "type": "Cancelled", "FinalStatus": "cancelled"}
+        logger.warning("Run %s cancelled: %s", cfg.run_id, exc)
+        if all_vm_instances and cfg.execute_vcenter:
+            logger.info("Cleaning up %s VMs after cancel...", len(all_vm_instances))
+            try:
+                cleanup_vms(all_vm_instances, cfg, on_failure=True)
+            except Exception as ce:
+                logger.warning("Cleanup after cancel failed: %s", ce)
+        if error_cb:
+            error_cb(err)
+        _teardown_log_cb(_log_handler)
+        return 5
     except RunCancelledError as exc:
         err = {"error": str(exc), "type": "Cancelled", "FinalStatus": "cancelled"}
         logger.warning("Run %s cancelled: %s", cfg.run_id, exc)
