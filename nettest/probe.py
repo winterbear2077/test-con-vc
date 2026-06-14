@@ -236,6 +236,10 @@ def run_icmp_checks(
                 actual=c.expected,
                 status="pass",
                 reason="dry-run-expected-as-actual",
+                phase=getattr(c, "phase", "intra-vrf"),
+                src_vm_index=getattr(c, "src_vm_index", 0),
+                dst_vm_index=getattr(c, "dst_vm_index", 0),
+                probe_type=getattr(c, "probe_type", "icmp"),
             )
             for c in cases
         ]
