@@ -95,32 +95,57 @@ pub fn ping_once(dst: [u8; 4], id: u16, seq: u16, timeout_ms: u64) -> bool {
 }
 
 /// Probe each target with up to 3 attempts; return PASS/FAIL map.
+/// All targets are probed in parallel so total time equals the slowest
+/// single ping rather than the sum — prevents serial-probe IO timeout
+/// when many cross-VRF targets are blocked (each timing out at 3 s × 3
+/// attempts = 9 s, which adds up to minutes when run sequentially).
 pub fn run_pings(logf: &mut dyn Write, targets: &[String]) -> HashMap<String, String> {
+    use std::sync::{Arc, Mutex};
+
     // Brief pause for routes to become active after netlink config.
     thread::sleep(Duration::from_millis(500));
-    let id = (std::process::id() & 0xffff) as u16;
-    let mut results = HashMap::new();
 
+    let base_id = (std::process::id() & 0xffff) as u16;
+    let log_lines: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let results:   Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
+
+    let mut handles = Vec::new();
     for (i, target) in targets.iter().enumerate() {
         if target.is_empty() { continue; }
-        let ip = match parse_ipv4(target) {
-            Some(v) => v,
-            None => {
-                log(logf, &format!("  ping {} -> INVALID", target));
-                results.insert(target.clone(), "FAIL".to_string());
-                continue;
+        let target = target.clone();
+        let log_lines = Arc::clone(&log_lines);
+        let results   = Arc::clone(&results);
+        let id = base_id.wrapping_add(i as u16);
+
+        let handle = thread::spawn(move || {
+            let ip = match parse_ipv4(&target) {
+                Some(v) => v,
+                None => {
+                    log_lines.lock().unwrap().push(format!("  ping {} -> INVALID", target));
+                    results.lock().unwrap().insert(target, "FAIL".to_string());
+                    return;
+                }
+            };
+            let mut pass = false;
+            for attempt in 0..3u16 {
+                if ping_once(ip, id, attempt, 3000) {
+                    pass = true; break;
+                }
+                if attempt < 2 { thread::sleep(Duration::from_millis(500)); }
             }
-        };
-        let mut pass = false;
-        for attempt in 0..3u16 {
-            if ping_once(ip, id, (i as u16) * 10 + attempt, 3000) {
-                pass = true; break;
-            }
-            if attempt < 2 { thread::sleep(Duration::from_millis(500)); }
-        }
-        let r = if pass { "PASS" } else { "FAIL" };
-        log(logf, &format!("  ping {} -> {}", target, r));
-        results.insert(target.clone(), r.to_string());
+            let r = if pass { "PASS" } else { "FAIL" };
+            log_lines.lock().unwrap().push(format!("  ping {} -> {}", target, r));
+            results.lock().unwrap().insert(target, r.to_string());
+        });
+        handles.push(handle);
     }
-    results
+
+    for h in handles { let _ = h.join(); }
+
+    // Flush collected log lines in insertion order
+    for line in log_lines.lock().unwrap().iter() {
+        log(logf, line);
+    }
+
+    Arc::try_unwrap(results).unwrap().into_inner().unwrap()
 }
