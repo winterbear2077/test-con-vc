@@ -1,4 +1,4 @@
-"""API routes: /api/input and /api/vrf-rules"""
+"""API routes: /api/input, /api/vrf-rules, /api/custom-step-rules"""
 from __future__ import annotations
 
 from typing import Dict, List
@@ -44,4 +44,20 @@ def api_get_vrf_rules():
 @router.put("/api/vrf-rules")
 def api_put_vrf_rules(body: VrfRulesIn):
     _db.save_vrf_rules(body.rules)
+    return {"ok": True}
+
+
+# ── Custom Step Rules ────────────────────────────────────────────────────────
+class CustomStepRulesIn(BaseModel):
+    rules: List[Dict]
+
+
+@router.get("/api/custom-step-rules")
+def api_get_custom_step_rules():
+    return {"rules": _db.get_custom_step_rules()}
+
+
+@router.put("/api/custom-step-rules")
+def api_put_custom_step_rules(body: CustomStepRulesIn):
+    _db.save_custom_step_rules(body.rules)
     return {"ok": True}

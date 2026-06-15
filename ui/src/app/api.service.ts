@@ -56,6 +56,27 @@ export interface RunRequest {
   vrf_links?: string[];
 }
 
+export interface CustomStepRunRequest {
+  rules: Array<{
+    src_subnet: string;
+    protocol: 'tcp' | 'udp' | 'icmp';
+    dest: string;
+    port?: number;
+    comment?: string;
+  }>;
+  execute_vcenter?: boolean;
+  probe_mode?: string;
+}
+
+export interface CustomStepRuleRow {
+  id?: number;
+  src_subnet: string;
+  protocol: 'tcp' | 'udp' | 'icmp';
+  dest: string;
+  port: number;
+  comment: string;
+}
+
 export interface VrfRuleRow {
   id?: number;
   from_vrf: string;
@@ -174,6 +195,10 @@ export class ApiService {
     return this.http.post<{ run_id: string }>(this.base + '/run', req, this.sessionHeaders());
   }
 
+  startCustomStepRun(req: CustomStepRunRequest): Observable<{ run_id: string }> {
+    return this.http.post<{ run_id: string }>(this.base + '/run/custom-steps', req, this.sessionHeaders());
+  }
+
   cancelRun(runId: string): Observable<{ ok: boolean; run_id?: string; detail?: string }> {
     return this.http.post<{ ok: boolean; run_id?: string; detail?: string }>(
       this.base + '/run/' + runId + '/cancel',
@@ -215,5 +240,13 @@ export class ApiService {
 
   saveVrfRules(rules: VrfRuleRow[]): Observable<any> {
     return this.http.put<any>(this.base + '/vrf-rules', { rules });
+  }
+
+  getCustomStepRules(): Observable<{ rules: CustomStepRuleRow[] }> {
+    return this.http.get<{ rules: CustomStepRuleRow[] }>(this.base + '/custom-step-rules');
+  }
+
+  saveCustomStepRules(rules: CustomStepRuleRow[]): Observable<any> {
+    return this.http.put<any>(this.base + '/custom-step-rules', { rules });
   }
 }

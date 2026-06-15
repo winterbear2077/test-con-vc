@@ -16,6 +16,30 @@ const PHASE_COLORS: Record<string, string> = {
   'cross-vrf-block': 'label-light-blue',
 };
 
+function parseCustomPhaseId(phaseId: string): { row: number; step: number } | null {
+  const m = /^custom-(\d+)-step(\d+)$/.exec(phaseId || '');
+  if (!m) return null;
+  return { row: Number(m[1]), step: Number(m[2]) };
+}
+
+function phaseMeta(phaseId: string): { label: string; color: string } {
+  if (PHASE_NAMES[phaseId]) {
+    return {
+      label: PHASE_NAMES[phaseId],
+      color: PHASE_COLORS[phaseId] || 'label-light-blue',
+    };
+  }
+  const custom = parseCustomPhaseId(phaseId);
+  if (custom) {
+    const stepLabel = custom.step === 1 ? 'Ping' : 'Protocol';
+    return {
+      label: `Custom Row ${custom.row + 1} - ${stepLabel}`,
+      color: custom.step === 1 ? 'label-info' : 'label-warning',
+    };
+  }
+  return { label: phaseId, color: 'label-light-blue' };
+}
+
 @Component({
   selector: 'app-result-panel',
   standalone: true,
@@ -41,21 +65,37 @@ export class ResultPanelComponent implements OnChanges {
     [...(result.ParsedInput?.vm_provisioned || []), ...(result.ParsedInput?.mngt_esxi_skipped || [])].forEach((r: any) => {
       if (r.subnet) { subnetVrf[r.subnet] = r.vrf || ''; subnetVlan[r.subnet] = r.vlan || ''; }
     });
-    const phaseOrder = ['intra-subnet', 'intra-vrf', 'cross-vrf-allowlist', 'cross-vrf-block'];
+    const defaultPhaseOrder = ['intra-subnet', 'intra-vrf', 'cross-vrf-allowlist', 'cross-vrf-block'];
     const detailsByPhase: Record<string, any[]> = {};
     details.forEach(d => {
       const ph = d.phase || 'intra-vrf';
       if (!detailsByPhase[ph]) detailsByPhase[ph] = [];
       detailsByPhase[ph].push(d);
     });
+    const presentPhases = Object.keys(detailsByPhase);
+    const extraPhases = presentPhases
+      .filter(ph => !defaultPhaseOrder.includes(ph))
+      .sort((a, b) => {
+        const pa = parseCustomPhaseId(a);
+        const pb = parseCustomPhaseId(b);
+        if (pa && pb) {
+          if (pa.row !== pb.row) return pa.row - pb.row;
+          return pa.step - pb.step;
+        }
+        if (pa) return 1;
+        if (pb) return -1;
+        return a.localeCompare(b);
+      });
+    const phaseOrder = [...defaultPhaseOrder, ...extraPhases];
     const matrices = phaseOrder.filter(ph => (detailsByPhase[ph] || []).length > 0).map(ph => {
       const pds = detailsByPhase[ph];
+      const meta = phaseMeta(ph);
       return {
         ph, pds,
         srcSubnets: [...new Set(pds.map((d: any) => d.src_subnet))],
         dstSubnets: [...new Set(pds.map((d: any) => d.dst_subnet))],
-        phaseLabel: PHASE_NAMES[ph] || ph,
-        phaseColor: PHASE_COLORS[ph] || 'label-light-blue',
+        phaseLabel: meta.label,
+        phaseColor: meta.color,
       };
     });
     return {
@@ -88,6 +128,6 @@ export class ResultPanelComponent implements OnChanges {
     return '\u26A0';
   }
 
-  phaseName(ph: string): string { return PHASE_NAMES[ph] || ph; }
-  phaseColor(ph: string): string { return PHASE_COLORS[ph] || 'label-light-blue'; }
+  phaseName(ph: string): string { return phaseMeta(ph).label; }
+  phaseColor(ph: string): string { return phaseMeta(ph).color; }
 }

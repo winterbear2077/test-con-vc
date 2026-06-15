@@ -1,0 +1,68 @@
+<div class="section-header">
+  <clr-icon shape="plugin" size="20"></clr-icon> Custom Step Test
+</div>
+
+<p class="p6 text-muted" style="margin-bottom:1rem">
+  Configure custom rows in format <strong>src protocol dest port comment</strong>.
+  These rows will be executed automatically after regular Run Test cases when you click Execute in Run Test.
+</p>
+
+<div class="card" style="margin-bottom:1rem">
+  <div class="card-header" style="display:flex;align-items:center;gap:8px">
+    <span>Custom Rules</span>
+    <button class="btn btn-outline btn-sm" (click)="addCustomRule()">
+      <clr-icon shape="plus" size="14"></clr-icon> Add Row
+    </button>
+    <button class="btn btn-outline-danger btn-sm" style="margin-left:auto" (click)="clearCustomRules()">
+      <clr-icon shape="trash" size="14"></clr-icon> Clear All
+    </button>
+  </div>
+  <div class="card-block">
+    <div class="card-text">
+      <div *ngIf="!customRules.length" class="p6 text-muted" style="font-style:italic">
+        No custom rows defined.
+      </div>
+      <div *ngIf="customRules.length" class="clr-row p6 text-muted" style="font-weight:600;margin-bottom:4px">
+        <div class="clr-col" style="max-width:200px">src</div>
+        <div class="clr-col" style="max-width:120px">protocol</div>
+        <div class="clr-col" style="max-width:220px">dest</div>
+        <div class="clr-col" style="max-width:100px">port</div>
+        <div class="clr-col">comment</div>
+      </div>
+      <div *ngFor="let row of customRules" class="clr-row clr-align-items-center" style="margin-bottom:6px">
+        <div class="clr-col" style="max-width:200px">
+          <input type="text" class="clr-input" [(ngModel)]="row.src_subnet" placeholder="10.10.10.0/24" />
+        </div>
+        <div class="clr-col" style="max-width:120px">
+          <select [(ngModel)]="row.protocol" class="clr-select">
+            <option value="tcp">tcp</option>
+            <option value="udp">udp</option>
+            <option value="icmp">icmp</option>
+          </select>
+        </div>
+        <div class="clr-col" style="max-width:220px">
+          <input type="text" class="clr-input" [(ngModel)]="row.dest" placeholder="10.10.20.20 or 10.10.20.0/24" />
+        </div>
+        <div class="clr-col" style="max-width:100px">
+          <input type="number" class="clr-input" [(ngModel)]="row.port" min="1" max="65535" [disabled]="row.protocol !== 'tcp'" />
+        </div>
+        <div class="clr-col">
+          <input type="text" class="clr-input" [(ngModel)]="row.comment" placeholder="Optional comment" style="width:100%" />
+        </div>
+        <div class="clr-col-auto">
+          <button class="btn btn-icon btn-sm btn-link" (click)="removeCustomRule(row.id)">
+            <clr-icon shape="trash" style="color:#c92100"></clr-icon>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="card-footer" style="display:flex;justify-content:flex-end;align-items:center;gap:10px">
+    <button class="btn btn-primary btn-sm" (click)="saveCustomRules()">
+      <clr-icon shape="floppy" size="14"></clr-icon> Save Custom Rules
+    </button>
+    <div style="min-height:1.2em;font-size:0.75rem;text-align:right"
+         [class.text-success]="customSaveMsg.startsWith('✓')"
+         [class.text-danger]="customSaveMsg.startsWith('✗')">{{ customSaveMsg }}</div>
+  </div>
+</div>

@@ -58,6 +58,22 @@ def _resolve_input_rows(
 
 
 def _prepare_run_inputs(cfg: "RunConfig", raw_rows: List[Dict[str, str]]) -> Dict[str, Any]:
+    if getattr(cfg, "custom_cases", None) is not None:
+        cases = list(cfg.custom_cases or [])
+        custom_gw = dict(getattr(cfg, "custom_gateway_by_subnet", {}) or {})
+        return {
+            "accepted": [],
+            "rejected": [],
+            "allowlist": set(),
+            "vrf_links": [],
+            "cases": cases,
+            "placements": [],
+            "network_bindings": [],
+            "placements_dict": {},
+            "bindings_dict": {},
+            "gateway_by_subnet": custom_gw,
+        }
+
     if cfg.execute_vcenter:
         validate_vcenter_requirements(cfg)
 
@@ -75,6 +91,13 @@ def _prepare_run_inputs(cfg: "RunConfig", raw_rows: List[Dict[str, str]]) -> Dic
     placements_dict = {(p.datacenter, p.cluster): p for p in placements}
     bindings_dict = {(b.datacenter, b.cluster, b.vlan): b for b in network_bindings}
     gateway_by_subnet = {r.subnet: r.gw for r in accepted}
+
+    appended_cases = list(getattr(cfg, "append_custom_cases", []) or [])
+    appended_gw = dict(getattr(cfg, "append_custom_gateway_by_subnet", {}) or {})
+    if appended_cases:
+        cases = list(cases) + appended_cases
+    if appended_gw:
+        gateway_by_subnet.update(appended_gw)
 
     return {
         "accepted": accepted,
@@ -458,6 +481,10 @@ class RunConfig:
         vms_per_subnet: int = 1,
         max_vms_per_phase: int = 20,
         vrf_links: Optional[List[Any]] = None,
+        custom_cases: Optional[List[TestCase]] = None,
+        custom_gateway_by_subnet: Optional[Dict[str, str]] = None,
+        append_custom_cases: Optional[List[TestCase]] = None,
+        append_custom_gateway_by_subnet: Optional[Dict[str, str]] = None,
         phases: str = "",
         # ── Probe communication channel ───────────────────────────────────────
         poll_method: str = "guestinfo",
@@ -498,6 +525,10 @@ class RunConfig:
         self.vms_per_subnet = vms_per_subnet
         self.max_vms_per_phase = max_vms_per_phase
         self.vrf_links = vrf_links or []
+        self.custom_cases = custom_cases
+        self.custom_gateway_by_subnet = custom_gateway_by_subnet or {}
+        self.append_custom_cases = append_custom_cases or []
+        self.append_custom_gateway_by_subnet = append_custom_gateway_by_subnet or {}
         self.phases = phases
         self.poll_method = poll_method
         self.serial_probe_host = serial_probe_host

@@ -20,6 +20,9 @@
         <a class="nav-link" [class.active]="activeTab==='rules'" (click)="navTo('rules')">
           <clr-icon shape="shield-check" size="16"></clr-icon> VRF Rules
         </a>
+        <a class="nav-link" [class.active]="activeTab==='custom-step'" (click)="navTo('custom-step')">
+          <clr-icon shape="plugin" size="16"></clr-icon> Custom Step Test
+        </a>
         <a class="nav-link" [class.active]="activeTab==='run'" (click)="navTo('run')">
           <clr-icon shape="play" size="16"></clr-icon> Run Test
         </a>
@@ -32,6 +35,7 @@
       <app-config [hidden]="activeTab!=='config'" (navigate)="navTo($event)"></app-config>
       <app-input-networks [hidden]="activeTab!=='input'"></app-input-networks>
       <app-vrf-rules [hidden]="activeTab!=='rules'"></app-vrf-rules>
+      <app-custom-step-test [hidden]="activeTab!=='custom-step'"></app-custom-step-test>
       <app-run-test [hidden]="activeTab!=='run'"></app-run-test>
       <app-history [hidden]="activeTab!=='history'" (navigate)="navTo($event)"></app-history>
     </div>

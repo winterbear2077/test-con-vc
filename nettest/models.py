@@ -49,6 +49,8 @@ class TestCase:
     probe_type: str = "icmp"
     # TCP ports to probe when probe_type == "tcp" (empty = use port 80)
     tcp_ports: List[int] = field(default_factory=list)
+    # Optional direct destination IP for custom point-to-point TCP tests.
+    dst_ip: str = ""
 
 
 @dataclass

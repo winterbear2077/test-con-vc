@@ -56,6 +56,15 @@ CREATE TABLE IF NOT EXISTS vrf_rules (
     action   TEXT NOT NULL DEFAULT 'PASS',
     comment  TEXT NOT NULL DEFAULT ''
 );
+
+CREATE TABLE IF NOT EXISTS custom_step_rules (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    src_subnet TEXT NOT NULL DEFAULT '',
+    protocol   TEXT NOT NULL DEFAULT 'tcp',
+    dest       TEXT NOT NULL DEFAULT '',
+    port       INTEGER NOT NULL DEFAULT 80,
+    comment    TEXT NOT NULL DEFAULT ''
+);
 """
 
 
@@ -357,6 +366,39 @@ def save_vrf_rules(rules: list[dict]) -> None:
                     str(r.get("fromVrf", r.get("from_vrf", ""))).strip(),
                     str(r.get("toVrf", r.get("to_vrf", ""))).strip(),
                     str(r.get("action", "PASS")).strip().upper(),
+                    str(r.get("comment", "")).strip(),
+                ),
+            )
+
+
+# ── Custom Step Rules ────────────────────────────────────────────────────────
+
+def get_custom_step_rules() -> list[dict]:
+    with _connect() as con:
+        rows = con.execute(
+            "SELECT id, src_subnet, protocol, dest, port, comment FROM custom_step_rules ORDER BY id"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def save_custom_step_rules(rules: list[dict]) -> None:
+    with _lock, _connect() as con:
+        con.execute("DELETE FROM custom_step_rules")
+        for r in rules:
+            protocol = str(r.get("protocol", "tcp")).strip().lower() or "tcp"
+            if protocol not in ("tcp", "udp", "icmp"):
+                protocol = "tcp"
+            try:
+                port = int(r.get("port", 80) or 80)
+            except Exception:
+                port = 80
+            con.execute(
+                "INSERT INTO custom_step_rules (src_subnet, protocol, dest, port, comment) VALUES (?,?,?,?,?)",
+                (
+                    str(r.get("srcSubnet", r.get("src_subnet", ""))).strip(),
+                    protocol,
+                    str(r.get("dest", "")).strip(),
+                    port,
                     str(r.get("comment", "")).strip(),
                 ),
             )

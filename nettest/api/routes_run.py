@@ -19,6 +19,7 @@ from pydantic import BaseModel
 
 import nettest.db as _db
 from nettest.runner import RunConfig, execute_run
+from nettest.models import TestCase
 from nettest.vcenter_utils import connect_vcenter_auto, disconnect_vcenter, get_all_vms_by_moid, delete_vm
 from nettest.api.deps import WORKSPACE, ARTIFACTS, _runs, _read_config, get_session_password
 
@@ -70,6 +71,72 @@ class RunIn(BaseModel):
     memboot_iso_path: str = ""
 
 
+class CustomStepRunIn(BaseModel):
+    rules: List[dict] = []
+    execute_vcenter: bool = False
+    probe_mode: str = "controller-gateway"
+
+
+def _build_custom_cases_from_rules(rules: List[dict]) -> tuple[list[TestCase], dict[str, str], set[str]]:
+    subnet_to_gw = {
+        str(row.get("subnet", "")).strip(): str(row.get("gw", "")).strip()
+        for row in _db.get_networks()
+    }
+
+    custom_cases: list[TestCase] = []
+    custom_gateway_by_subnet: dict[str, str] = {}
+    udp_phase_ids: set[str] = set()
+
+    for idx, rule in enumerate(rules):
+        src_subnet = str(rule.get("src_subnet", rule.get("srcSubnet", ""))).strip()
+        dest = str(rule.get("dest", "")).strip()
+        protocol = str(rule.get("protocol", "tcp")).strip().lower() or "tcp"
+        try:
+            port = int(rule.get("port", 80) or 80)
+        except Exception:
+            port = 80
+
+        if not src_subnet or not dest:
+            continue
+        if protocol not in ("tcp", "udp", "icmp"):
+            continue
+
+        dest_ip = subnet_to_gw.get(dest, dest)
+        custom_gateway_by_subnet[dest] = dest_ip
+
+        step1_phase = f"custom-{idx}-step1"
+        step2_phase = f"custom-{idx}-step2"
+
+        custom_cases.append(TestCase(
+            src_subnet=src_subnet,
+            dst_subnet=dest,
+            src_vrf="",
+            dst_vrf="",
+            expected="PASS",
+            reason="custom-step1-icmp",
+            phase=step1_phase,
+            probe_type="icmp",
+        ))
+
+        step2_probe_type = "tcp" if protocol == "tcp" else "icmp"
+        custom_cases.append(TestCase(
+            src_subnet=src_subnet,
+            dst_subnet=dest,
+            src_vrf="",
+            dst_vrf="",
+            expected="PASS",
+            reason=f"custom-step2-{protocol}",
+            phase=step2_phase,
+            probe_type=step2_probe_type,
+            tcp_ports=[port] if protocol == "tcp" else [],
+        ))
+
+        if protocol == "udp":
+            udp_phase_ids.add(step2_phase)
+
+    return custom_cases, custom_gateway_by_subnet, udp_phase_ids
+
+
 @router.post("/api/run")
 def api_start_run(req: RunIn, request: Request, x_vcenter_session: str = Header(default=""), x_vcenter_host: str = Header(default=""), x_session_token: str = Header(default="")):
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -89,6 +156,8 @@ def api_start_run(req: RunIn, request: Request, x_vcenter_session: str = Header(
         )
     vc_user = "" if session_id else str(cfg_dict.get("vcenter_user", "")).strip()
     vc_pass = "" if session_id else get_session_password(x_session_token.strip())
+    saved_custom_rules = _db.get_custom_step_rules()
+    append_custom_cases, append_custom_gateway_by_subnet, udp_phase_ids = _build_custom_cases_from_rules(saved_custom_rules)
 
     def _worker() -> None:
         rc = 4
@@ -105,6 +174,8 @@ def api_start_run(req: RunIn, request: Request, x_vcenter_session: str = Header(
                 max_vms_per_phase=req.max_vms_per_phase,
                 phases=req.phases,
                 vrf_links=list(req.vrf_links),
+                append_custom_cases=append_custom_cases,
+                append_custom_gateway_by_subnet=append_custom_gateway_by_subnet,
                 poll_method=req.poll_method,
                 serial_probe_host=req.serial_probe_host or str(cfg_dict.get("serial_probe_host", "") or ""),
                 serial_base_port=req.serial_base_port,
@@ -128,14 +199,26 @@ def api_start_run(req: RunIn, request: Request, x_vcenter_session: str = Header(
                 )
                 cfg.poll_method = "serial"
 
+            result_holder: dict = {"result": None}
             rc = execute_run(
                 cfg,
                 log_cb=lambda line: q.put(line),
-                result_cb=lambda r: _db.finish_run(run_id, r),
+                result_cb=lambda r: result_holder.__setitem__("result", r),
                 error_cb=lambda e: _db.finish_run_error(run_id, e),
                 objects_cb=lambda reg: _db.upsert_created_objects(run_id, reg),
                 cancel_event=cancel_event,
             )
+
+            out = result_holder.get("result") or {}
+            if out and udp_phase_ids:
+                for item in out.get("Results", []):
+                    if item.get("phase") in udp_phase_ids:
+                        item["actual"] = "UNKNOWN"
+                        item["status"] = "fail"
+                        item["reason"] = "udp-not-implemented-yet"
+                out["FinalStatus"] = "PASS" if all(r.get("status") == "pass" for r in out.get("Results", [])) else "FAIL"
+            if out:
+                _db.finish_run(run_id, out)
         except Exception as exc:
             tb = traceback.format_exc()
             logger.error("Worker thread crashed for run %s: %s\n%s", run_id, exc, tb)
@@ -144,6 +227,72 @@ def api_start_run(req: RunIn, request: Request, x_vcenter_session: str = Header(
         finally:
             _runs[run_id]["returncode"] = rc
             q.put(None)  # always send sentinel
+
+    threading.Thread(target=_worker, daemon=True).start()
+    return {"run_id": run_id}
+
+
+@router.post("/api/run/custom-steps")
+def api_start_custom_steps_run(req: CustomStepRunIn):
+    run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    q: _queue.Queue = _queue.Queue()
+    cancel_event = threading.Event()
+    _runs[run_id] = {"queue": q, "returncode": None, "cancel_event": cancel_event}
+    _db.insert_run(run_id, run_id)
+
+    if not req.rules:
+        raise HTTPException(400, "rules is required and must contain at least one row")
+
+    if req.probe_mode != "controller-gateway":
+        raise HTTPException(400, "custom step run currently supports probe_mode=controller-gateway only")
+
+    custom_cases, custom_gateway_by_subnet, udp_phase_ids = _build_custom_cases_from_rules(req.rules)
+    if not custom_cases:
+        raise HTTPException(400, "rules contains no valid rows")
+
+    def _worker() -> None:
+        rc = 4
+        try:
+            result_holder: dict = {"result": None}
+
+            rc = execute_run(
+                RunConfig(
+                    run_id=run_id,
+                    rows=[],
+                    custom_cases=custom_cases,
+                    custom_gateway_by_subnet=custom_gateway_by_subnet,
+                    probe_mode=req.probe_mode,
+                    execute_vcenter=req.execute_vcenter,
+                    max_retries=0,
+                    phased_testing=False,
+                    vrf_links=[],
+                ),
+                log_cb=lambda line: q.put(line),
+                result_cb=lambda r: result_holder.__setitem__("result", r),
+                error_cb=lambda e: _db.finish_run_error(run_id, e),
+                objects_cb=lambda reg: _db.upsert_created_objects(run_id, reg),
+                cancel_event=cancel_event,
+            )
+
+            out = result_holder.get("result") or {}
+            if out and udp_phase_ids:
+                for item in out.get("Results", []):
+                    if item.get("phase") in udp_phase_ids:
+                        item["actual"] = "UNKNOWN"
+                        item["status"] = "fail"
+                        item["reason"] = "udp-not-implemented-yet"
+                out["FinalStatus"] = "PASS" if all(r.get("status") == "pass" for r in out.get("Results", [])) else "FAIL"
+
+            if out:
+                _db.finish_run(run_id, out)
+        except Exception as exc:
+            tb = traceback.format_exc()
+            logger.error("Worker thread crashed for run %s: %s\n%s", run_id, exc, tb)
+            _db.finish_run_error(run_id, {"error": str(exc), "type": type(exc).__name__, "traceback": tb})
+            rc = 4
+        finally:
+            _runs[run_id]["returncode"] = rc
+            q.put(None)
 
     threading.Thread(target=_worker, daemon=True).start()
     return {"run_id": run_id}
