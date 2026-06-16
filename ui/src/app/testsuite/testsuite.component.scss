@@ -1,0 +1,24 @@
+.suite-list {
+  max-height: 420px;
+  overflow-y: auto;
+}
+
+.suite-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 2px 0;
+}
+
+.testcase-list {
+  max-height: 320px;
+  overflow-y: auto;
+  border: 1px solid #d7d7d7;
+  border-radius: 4px;
+  padding: 6px 8px;
+}
+
+.testcase-item {
+  padding: 2px 0;
+}

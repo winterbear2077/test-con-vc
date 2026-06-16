@@ -4,6 +4,7 @@ import { ConfigComponent } from './config/config.component';
 import { InputNetworksComponent } from './input-networks/input-networks.component';
 import { VrfRulesComponent } from './vrf-rules/vrf-rules.component';
 import { CustomStepTestComponent } from './custom-step-test/custom-step-test.component';
+import { TestsuiteComponent } from './testsuite/testsuite.component';
 import { RunTestComponent } from './run-test/run-test.component';
 import { HistoryComponent } from './history/history.component';
 
@@ -13,7 +14,7 @@ import { HistoryComponent } from './history/history.component';
   imports: [
     ClarityModule,
     ConfigComponent, InputNetworksComponent, VrfRulesComponent,
-    CustomStepTestComponent, RunTestComponent, HistoryComponent,
+    CustomStepTestComponent, TestsuiteComponent, RunTestComponent, HistoryComponent,
   ],
   templateUrl: './app.component.html',
   styleUrl: './app.component.scss'

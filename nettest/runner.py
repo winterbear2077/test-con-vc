@@ -18,6 +18,7 @@ from nettest.probe import run_icmp_checks
 from nettest.provisioning import provision_test_vms, cleanup_vms
 from nettest.policy import (
     ALL_PHASE_IDS,
+    assign_case_ids,
     generate_phased_cases,
     generate_test_cases,
     merge_retry_results,
@@ -29,6 +30,22 @@ from nettest.policy import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _filter_cases_by_selection(
+    cases: List[TestCase],
+    testsuite: str,
+    testcase_ids: List[str],
+) -> List[TestCase]:
+    selected = list(cases)
+    suite = (testsuite or "").strip()
+    if suite and suite != "all":
+        selected = [c for c in selected if c.phase == suite]
+
+    ids = {x.strip() for x in (testcase_ids or []) if str(x).strip()}
+    if ids:
+        selected = [c for c in selected if c.case_id in ids]
+    return selected
 
 
 def now_run_id() -> str:
@@ -61,12 +78,14 @@ def _prepare_run_inputs(cfg: "RunConfig", raw_rows: List[Dict[str, str]]) -> Dic
     if getattr(cfg, "custom_cases", None) is not None:
         cases = list(cfg.custom_cases or [])
         custom_gw = dict(getattr(cfg, "custom_gateway_by_subnet", {}) or {})
+        assign_case_ids(cases, prefix="custom")
+        filtered_cases = _filter_cases_by_selection(cases, cfg.testsuite, cfg.testcase_ids)
         return {
             "accepted": [],
             "rejected": [],
             "allowlist": set(),
             "vrf_links": [],
-            "cases": cases,
+            "cases": filtered_cases,
             "placements": [],
             "network_bindings": [],
             "placements_dict": {},
@@ -96,6 +115,8 @@ def _prepare_run_inputs(cfg: "RunConfig", raw_rows: List[Dict[str, str]]) -> Dic
     appended_gw = dict(getattr(cfg, "append_custom_gateway_by_subnet", {}) or {})
     if appended_cases:
         cases = list(cases) + appended_cases
+    assign_case_ids(cases)
+    cases = _filter_cases_by_selection(cases, cfg.testsuite, cfg.testcase_ids)
     if appended_gw:
         gateway_by_subnet.update(appended_gw)
 
@@ -146,6 +167,99 @@ def _init_probe_servers(cfg: "RunConfig") -> tuple[Any, Any]:
     return serial_srv, vsock_srv
 
 
+def _find_datacenter_for_iso_cleanup(content: Any, vim: Any, datacenter_name: str) -> Any:
+    view = content.viewManager.CreateContainerView(content.rootFolder, [vim.Datacenter], True)
+    try:
+        target = str(datacenter_name or "").strip().upper()
+        for dc in view.view:
+            if str(getattr(dc, "name", "")).strip().upper() == target:
+                return dc
+    finally:
+        view.Destroy()
+    return None
+
+
+def _cleanup_uploaded_isos(
+    *,
+    cfg: "RunConfig",
+    created_registry: Dict[str, List[Any]],
+    persist_registry: Callable[[], None],
+    on_failure: bool,
+) -> Dict[str, Any]:
+    iso_entries = [e for e in created_registry.get("isos", []) if isinstance(e, dict) and e.get("path")]
+    if not iso_entries:
+        return {"cleaned": 0, "failed": 0, "retained": 0, "reason": "no-uploaded-isos"}
+
+    if not cfg.execute_vcenter:
+        return {
+            "cleaned": 0,
+            "failed": 0,
+            "retained": len(iso_entries),
+            "reason": "dry-run-mode",
+        }
+
+    if on_failure and not cfg.cleanup_on_failure:
+        return {
+            "cleaned": 0,
+            "failed": 0,
+            "retained": len(iso_entries),
+            "reason": "cleanup_on_failure=False; isos retained for troubleshooting",
+        }
+
+    try:
+        from pyVmomi import vim
+        from nettest.vcenter_utils import vcenter_session, wait_for_task
+    except Exception as exc:
+        return {
+            "cleaned": 0,
+            "failed": len(iso_entries),
+            "retained": len(iso_entries),
+            "reason": f"pyvmomi-import-failed: {exc}",
+        }
+
+    cleaned = 0
+    failed: List[Dict[str, str]] = []
+    retained_entries: List[Dict[str, str]] = []
+
+    try:
+        with vcenter_session(cfg) as si:
+            content = si.RetrieveContent()
+            for entry in iso_entries:
+                ds_path = str(entry.get("path", "")).strip()
+                dc_name = str(entry.get("datacenter", "")).strip()
+                if not ds_path:
+                    continue
+                try:
+                    dc_obj = _find_datacenter_for_iso_cleanup(content, vim, dc_name) if dc_name else None
+                    task = content.fileManager.DeleteDatastoreFile_Task(name=ds_path, datacenter=dc_obj)
+                    state = str(getattr(getattr(task, "info", None), "state", ""))
+                    if state != "success":
+                        wait_for_task(task)
+                    cleaned += 1
+                except Exception as exc:
+                    retained_entries.append({"datacenter": dc_name, "path": ds_path})
+                    failed.append({"datacenter": dc_name, "path": ds_path, "reason": str(exc)})
+    except Exception as exc:
+        return {
+            "cleaned": 0,
+            "failed": len(iso_entries),
+            "retained": len(iso_entries),
+            "reason": f"vcenter-connect-failed: {exc}",
+        }
+
+    created_registry["isos"] = retained_entries
+    persist_registry()
+
+    out: Dict[str, Any] = {
+        "cleaned": cleaned,
+        "failed": len(failed),
+        "retained": len(retained_entries),
+    }
+    if failed:
+        out["failed_isos"] = failed
+    return out
+
+
 def _run_phased_testing(
     *,
     cfg: "RunConfig",
@@ -164,10 +278,13 @@ def _run_phased_testing(
 ) -> tuple[List[TestResult], List[Dict[str, Any]]]:
     all_results: List[TestResult] = []
     phase_summaries: List[Dict[str, Any]] = []
+    had_failure = False
 
     enabled_phases_list = None
     if cfg.phases:
         enabled_phases_list = [p.strip() for p in cfg.phases.split(",") if p.strip()]
+    elif cfg.testsuite and cfg.testsuite != "all":
+        enabled_phases_list = [cfg.testsuite]
 
     phases = generate_phased_cases(
         accepted,
@@ -179,7 +296,13 @@ def _run_phased_testing(
     )
     logger.info("Phased testing: %s phase(s) generated", len(phases))
 
+    selected_case_ids = {x.strip() for x in (cfg.testcase_ids or []) if str(x).strip()}
+
     for phase in phases:
+        if cfg.testsuite and cfg.testsuite != "all" and phase.phase_id != cfg.testsuite:
+            continue
+        if selected_case_ids:
+            phase.cases = [c for c in phase.cases if c.case_id in selected_case_ids]
         if not phase.cases:
             continue
 
@@ -252,6 +375,7 @@ def _run_phased_testing(
         )
 
         if ph_failed:
+            had_failure = True
             if phase_vm_instances:
                 if cfg.cleanup_on_failure:
                     cleanup_vms(phase_vm_instances, cfg, on_failure=True)
@@ -263,6 +387,14 @@ def _run_phased_testing(
         if phase_vm_instances:
             logger.info("Cleaning up %s phase VMs...", len(phase_vm_instances))
             cleanup_vms(phase_vm_instances, cfg, on_failure=False)
+
+    iso_cleanup = _cleanup_uploaded_isos(
+        cfg=cfg,
+        created_registry=created_registry,
+        persist_registry=persist_registry,
+        on_failure=had_failure,
+    )
+    logger.info("ISO cleanup completed: %s", iso_cleanup)
 
     return all_results, phase_summaries
 
@@ -288,7 +420,12 @@ def _run_classic_testing(
 
     vm_instances: List[Any] = []
     if cfg.execute_vcenter and cfg.probe_mode in ("in-guest", "in-guest-ping"):
-        vm_rows = [r for r in accepted if r.mode == "vm-provisioned"]
+        # Provision only subnets participating in the selected cases.
+        selected_subnets = {c.src_subnet for c in cases} | {c.dst_subnet for c in cases}
+        vm_rows = [
+            r for r in accepted
+            if r.mode == "vm-provisioned" and r.subnet in selected_subnets
+        ]
         if vm_rows:
             logger.info("Provisioning test VMs...")
 
@@ -351,6 +488,17 @@ def _run_classic_testing(
         logger.info("Cleaning up test VMs...")
         cleanup_result = cleanup_vms(vm_instances, cfg, on_failure=bool(failed_results))
         logger.info("VM cleanup completed: %s", cleanup_result)
+
+    iso_cleanup = _cleanup_uploaded_isos(
+        cfg=cfg,
+        created_registry=created_registry,
+        persist_registry=persist_registry,
+        on_failure=bool(failed_results),
+    )
+    logger.info("ISO cleanup completed: %s", iso_cleanup)
+    if cleanup_result is None:
+        cleanup_result = {}
+    cleanup_result["iso_cleanup"] = iso_cleanup
 
     return all_results, attempt_history, cleanup_result
 
@@ -486,6 +634,8 @@ class RunConfig:
         append_custom_cases: Optional[List[TestCase]] = None,
         append_custom_gateway_by_subnet: Optional[Dict[str, str]] = None,
         phases: str = "",
+        testsuite: str = "",
+        testcase_ids: Optional[List[str]] = None,
         # ── Probe communication channel ───────────────────────────────────────
         poll_method: str = "guestinfo",
         # serial: controller IP reachable by ESXi NFC (auto-detected when empty)
@@ -530,6 +680,8 @@ class RunConfig:
         self.append_custom_cases = append_custom_cases or []
         self.append_custom_gateway_by_subnet = append_custom_gateway_by_subnet or {}
         self.phases = phases
+        self.testsuite = testsuite
+        self.testcase_ids = testcase_ids or []
         self.poll_method = poll_method
         self.serial_probe_host = serial_probe_host
         self.serial_base_port = serial_base_port
@@ -607,6 +759,9 @@ def execute_run(
         bindings_dict = prepared["bindings_dict"]
         gateway_by_subnet = prepared["gateway_by_subnet"]
 
+        if (cfg.testsuite or cfg.testcase_ids) and not cases and not cfg.phased_testing:
+            raise RuntimeError("No test cases matched the selected testsuite/testcases")
+
         vcenter_si = _connect_vcenter_if_needed(cfg)
         _serial_srv, _vsock_srv = _init_probe_servers(cfg)
 
@@ -645,6 +800,9 @@ def execute_run(
                 vcenter_si=vcenter_si,
                 check_cancel=_check_cancel,
             )
+
+        if (cfg.testsuite or cfg.testcase_ids) and not all_results:
+            raise RuntimeError("No test cases matched the selected testsuite/testcases")
 
         result_payload = _build_result_payload(
             cfg=cfg,

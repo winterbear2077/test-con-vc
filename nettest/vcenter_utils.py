@@ -49,7 +49,8 @@ def connect_vcenter_with_clone_ticket(host: str, clone_ticket: str) -> Any:
     si = vim.ServiceInstance("ServiceInstance", stub)
     # CloneSession() authenticates the stub — vCenter sets vmware_soap_session cookie
     # in the SOAP response and pyVmomi captures it for all subsequent calls.
-    si.content.sessionManager.CloneSession(clone_ticket)
+    if si.content.sessionManager:
+        si.content.sessionManager.CloneSession(clone_ticket)
     atexit.register(_connect.Disconnect, si)
     return si
 
@@ -90,7 +91,9 @@ def connect_vcenter_direct(host: str, user: str, pwd: str) -> Any:
     return si
 
 
-def connect_vcenter_auto(host: str, user: str = "", pwd: str = "", session_id: str = "") -> Any:
+def connect_vcenter_auto(
+    host: str, user: str = "", pwd: str = "", session_id: str = ""
+) -> Any:
     """Connect via session cookie (plugin mode) or explicit credentials."""
     if session_id:
         return connect_vcenter_with_session(host=host, soap_session_id=session_id)
@@ -188,7 +191,9 @@ def vcenter_session(args: Any):
         disconnect_vcenter(si)
 
 
-def enable_esxi_firewall_ruleset(si: Any, ruleset_id: str = "remoteSerialPort") -> Dict[str, Any]:
+def enable_esxi_firewall_ruleset(
+    si: Any, ruleset_id: str = "remoteSerialPort"
+) -> Dict[str, Any]:
     """Enable a firewall ruleset on every connected ESXi host visible to *si*.
 
     Returns a dict mapping host name -> "ok" | error message.
@@ -200,7 +205,9 @@ def enable_esxi_firewall_ruleset(si: Any, ruleset_id: str = "remoteSerialPort") 
 
     results: Dict[str, Any] = {}
     content = si.content
-    view = content.viewManager.CreateContainerView(content.rootFolder, [vim.HostSystem], True)
+    view = content.viewManager.CreateContainerView(
+        content.rootFolder, [vim.HostSystem], True
+    )
     try:
         hosts = list(view.view)
     finally:

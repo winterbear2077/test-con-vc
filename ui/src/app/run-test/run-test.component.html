@@ -33,6 +33,16 @@
             <input clrInput type="number" [(ngModel)]="maxVmsPerPhase" min="2" max="100" style="width:72px" [disabled]="!phasedTesting" />
           </clr-input-container>
         </div>
+        <div class="clr-col-auto">
+          <clr-select-container>
+            <label>Testsuite</label>
+            <select clrSelect [(ngModel)]="selectedTestsuite" style="min-width:220px">
+              <option value="">Default (All VRF + Custom)</option>
+              <option *ngFor="let s of suites" [value]="s.name">{{ s.name }} ({{ (s.testcase_keys || []).length }})</option>
+            </select>
+          </clr-select-container>
+          <!-- <button class="btn btn-sm btn-link" style="margin-top:2px" (click)="refreshSuites()">Refresh</button> -->
+        </div>
         <div class="clr-col-lg" *ngIf="phasedTesting">
           <label class="p6" style="font-weight:600;display:block;margin-bottom:4px">Phases</label>
           <div style="display:flex;gap:12px;flex-wrap:wrap">

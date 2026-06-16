@@ -18,8 +18,10 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 import nettest.db as _db
+from nettest.input_handlers import validate_and_normalize
 from nettest.runner import RunConfig, execute_run
 from nettest.models import TestCase
+from nettest.policy import assign_case_ids, generate_test_cases, parse_vrf_links
 from nettest.vcenter_utils import connect_vcenter_auto, disconnect_vcenter, get_all_vms_by_moid, delete_vm
 from nettest.api.deps import WORKSPACE, ARTIFACTS, _runs, _read_config, get_session_password
 
@@ -60,6 +62,8 @@ class RunIn(BaseModel):
     vms_per_subnet: int = 1
     max_vms_per_phase: int = 20
     phases: str = ""           # comma-separated phase IDs, empty = all
+    testsuite: str = ""        # testsuite name; empty = default full run
+    testcase_ids: List[str] = []
     vrf_links: List[str] = []  # "FROM:TO" or "FROM:TO:FAIL"
     # Probe communication channel (guestinfo | serial | vsock)
     poll_method: str = "guestinfo"
@@ -101,11 +105,15 @@ def _build_custom_cases_from_rules(rules: List[dict]) -> tuple[list[TestCase], d
         if protocol not in ("tcp", "udp", "icmp"):
             continue
 
+        key_raw = f"{src_subnet}|{protocol}|{dest}|{port}"
+        key = "".join(ch if ch.isalnum() else "-" for ch in key_raw).strip("-") or f"rule-{idx+1}"
+
         dest_ip = subnet_to_gw.get(dest, dest)
         custom_gateway_by_subnet[dest] = dest_ip
 
         step1_phase = f"custom-{idx}-step1"
         step2_phase = f"custom-{idx}-step2"
+        case_base = f"custom-rule-{key}"
 
         custom_cases.append(TestCase(
             src_subnet=src_subnet,
@@ -116,6 +124,7 @@ def _build_custom_cases_from_rules(rules: List[dict]) -> tuple[list[TestCase], d
             reason="custom-step1-icmp",
             phase=step1_phase,
             probe_type="icmp",
+            case_id=f"{case_base}-step1",
         ))
 
         step2_probe_type = "tcp" if protocol == "tcp" else "icmp"
@@ -129,6 +138,7 @@ def _build_custom_cases_from_rules(rules: List[dict]) -> tuple[list[TestCase], d
             phase=step2_phase,
             probe_type=step2_probe_type,
             tcp_ports=[port] if protocol == "tcp" else [],
+            case_id=f"{case_base}-step2",
         ))
 
         if protocol == "udp":
@@ -159,6 +169,19 @@ def api_start_run(req: RunIn, request: Request, x_vcenter_session: str = Header(
     saved_custom_rules = _db.get_custom_step_rules()
     append_custom_cases, append_custom_gateway_by_subnet, udp_phase_ids = _build_custom_cases_from_rules(saved_custom_rules)
 
+    selected_suite_name = str(req.testsuite or "").strip()
+    selected_suite_case_ids: list[str] = []
+    if selected_suite_name:
+        suites = _db.get_testsuites()
+        picked = next((s for s in suites if str(s.get("name", "")).strip() == selected_suite_name), None)
+        if not picked:
+            raise HTTPException(400, f"testsuite not found: {selected_suite_name}")
+        selected_suite_case_ids = list({
+            str(x).strip()
+            for x in (picked.get("testcase_keys") or [])
+            if str(x).strip()
+        })
+
     def _worker() -> None:
         rc = 4
         try:
@@ -169,10 +192,12 @@ def api_start_run(req: RunIn, request: Request, x_vcenter_session: str = Header(
                 max_retries=req.max_retries,
                 cleanup_on_failure=req.cleanup_on_failure,
                 execute_vcenter=req.execute_vcenter,
-                phased_testing=req.phased_testing,
+                phased_testing=(False if selected_suite_name else req.phased_testing),
                 vms_per_subnet=req.vms_per_subnet,
                 max_vms_per_phase=req.max_vms_per_phase,
                 phases=req.phases,
+                testsuite="",
+                testcase_ids=(selected_suite_case_ids if selected_suite_name else []),
                 vrf_links=list(req.vrf_links),
                 append_custom_cases=append_custom_cases,
                 append_custom_gateway_by_subnet=append_custom_gateway_by_subnet,
@@ -230,6 +255,62 @@ def api_start_run(req: RunIn, request: Request, x_vcenter_session: str = Header(
 
     threading.Thread(target=_worker, daemon=True).start()
     return {"run_id": run_id}
+
+
+@router.get("/api/run/catalog")
+def api_run_catalog():
+    rows = _db.get_networks()
+    accepted, rejected = validate_and_normalize(rows, "MNGT")
+
+    rule_dicts = [
+        {
+            "from_vrf": str(r.get("from_vrf", "")).strip(),
+            "to_vrf": str(r.get("to_vrf", "")).strip(),
+            "expected": str(r.get("action", "PASS")).strip().upper(),
+            "comment": str(r.get("comment", "")).strip(),
+        }
+        for r in _db.get_vrf_rules()
+    ]
+    vrf_links = parse_vrf_links(rule_dicts)
+
+    cases = generate_test_cases(accepted, set(), vrf_links)
+    custom_rules = _db.get_custom_step_rules()
+    custom_cases, _, _ = _build_custom_cases_from_rules(custom_rules)
+    cases.extend(custom_cases)
+    assign_case_ids(cases)
+
+    suite_counts: dict[str, int] = {}
+    for case in cases:
+        suite_counts[case.phase] = suite_counts.get(case.phase, 0) + 1
+
+    suite_order = ["intra-subnet", "intra-vrf", "cross-vrf-allowlist", "cross-vrf-block"]
+    seen = set(suite_order)
+    extras = sorted([s for s in suite_counts.keys() if s not in seen])
+    ordered_suites = [s for s in suite_order if s in suite_counts] + extras
+
+    return {
+        "summary": {
+            "accepted_rows": len(accepted),
+            "rejected_rows": len(rejected),
+            "total_cases": len(cases),
+        },
+        "suites": [
+            {"id": sid, "count": suite_counts[sid]}
+            for sid in ordered_suites
+        ],
+        "testcases": [
+            {
+                "id": c.case_id,
+                "suite": c.phase,
+                "src_subnet": c.src_subnet,
+                "dst_subnet": c.dst_subnet,
+                "expected": c.expected,
+                "reason": c.reason,
+                "label": f"{c.src_subnet} -> {c.dst_subnet} [{c.expected}] ({c.reason})",
+            }
+            for c in cases
+        ],
+    }
 
 
 @router.post("/api/run/custom-steps")

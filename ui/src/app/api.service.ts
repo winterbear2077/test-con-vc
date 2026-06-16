@@ -1,6 +1,6 @@
 import { Injectable } from '@angular/core';
 import { HttpClient, HttpHeaders, HttpParams } from '@angular/common/http';
-import { Observable } from 'rxjs';
+import { Observable, Subject } from 'rxjs';
 import { tap } from 'rxjs/operators';
 import { PluginContextService } from './plugin-context.service';
 
@@ -53,7 +53,53 @@ export interface RunRequest {
   vms_per_subnet?: number;
   max_vms_per_phase?: number;
   phases?: string;
+  testsuite?: string;
   vrf_links?: string[];
+}
+
+export interface RunSuite {
+  id: string;
+  count: number;
+}
+
+export interface RunTestcase {
+  id: string;
+  suite: string;
+  src_subnet: string;
+  dst_subnet: string;
+  expected: string;
+  reason: string;
+  label: string;
+}
+
+export interface RunCatalog {
+  summary: {
+    accepted_rows: number;
+    rejected_rows: number;
+    total_cases: number;
+  };
+  suites: RunSuite[];
+  testcases: RunTestcase[];
+}
+
+export interface CustomStepTestcase {
+  id: string;
+  rule_id?: number;
+  step: number;
+  phase: string;
+  src_subnet: string;
+  dest: string;
+  target: string;
+  protocol: 'tcp' | 'udp' | 'icmp';
+  port: number;
+  label: string;
+}
+
+export interface TestSuite {
+  id?: number;
+  name: string;
+  created_at?: string;
+  testcase_keys: string[];
 }
 
 export interface CustomStepRunRequest {
@@ -102,6 +148,7 @@ export class ApiService {
   /** Absolute base derived from <base href> so EventSource works inside vCenter iframes. */
   private absBase: string;
   private sessionToken: string | null = null;
+  readonly testsuiteChanged$ = new Subject<void>();
 
   constructor(private http: HttpClient, private plugin: PluginContextService) {
     // document.baseURI respects the <base href> tag (which web_app.py rewrites for plugin mode).
@@ -195,6 +242,10 @@ export class ApiService {
     return this.http.post<{ run_id: string }>(this.base + '/run', req, this.sessionHeaders());
   }
 
+  getRunCatalog(): Observable<RunCatalog> {
+    return this.http.get<RunCatalog>(this.base + '/run/catalog');
+  }
+
   startCustomStepRun(req: CustomStepRunRequest): Observable<{ run_id: string }> {
     return this.http.post<{ run_id: string }>(this.base + '/run/custom-steps', req, this.sessionHeaders());
   }
@@ -248,5 +299,19 @@ export class ApiService {
 
   saveCustomStepRules(rules: CustomStepRuleRow[]): Observable<any> {
     return this.http.put<any>(this.base + '/custom-step-rules', { rules });
+  }
+
+  getCustomStepTestcases(): Observable<{ testcases: CustomStepTestcase[] }> {
+    return this.http.get<{ testcases: CustomStepTestcase[] }>(this.base + '/custom-step-testcases');
+  }
+
+  getTestSuites(): Observable<{ suites: TestSuite[] }> {
+    return this.http.get<{ suites: TestSuite[] }>(this.base + '/testsuites');
+  }
+
+  saveTestSuites(suites: TestSuite[]): Observable<any> {
+    return this.http.put<any>(this.base + '/testsuites', { suites }).pipe(
+      tap(() => this.testsuiteChanged$.next())
+    );
   }
 }

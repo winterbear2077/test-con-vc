@@ -65,6 +65,18 @@ CREATE TABLE IF NOT EXISTS custom_step_rules (
     port       INTEGER NOT NULL DEFAULT 80,
     comment    TEXT NOT NULL DEFAULT ''
 );
+
+CREATE TABLE IF NOT EXISTS testsuites (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    name       TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS testsuite_cases (
+    suite_id      INTEGER NOT NULL REFERENCES testsuites(id) ON DELETE CASCADE,
+    testcase_key  TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (suite_id, testcase_key)
+);
 """
 
 
@@ -402,4 +414,53 @@ def save_custom_step_rules(rules: list[dict]) -> None:
                     str(r.get("comment", "")).strip(),
                 ),
             )
+
+
+# ── Test Suites ──────────────────────────────────────────────────────────────
+
+def get_testsuites() -> list[dict]:
+    with _connect() as con:
+        suites = con.execute(
+            "SELECT id, name, created_at FROM testsuites ORDER BY name"
+        ).fetchall()
+
+        out: list[dict] = []
+        for s in suites:
+            case_rows = con.execute(
+                "SELECT testcase_key FROM testsuite_cases WHERE suite_id=? ORDER BY testcase_key",
+                (s["id"],),
+            ).fetchall()
+            out.append(
+                {
+                    "id": s["id"],
+                    "name": s["name"],
+                    "created_at": s["created_at"],
+                    "testcase_keys": [r["testcase_key"] for r in case_rows],
+                }
+            )
+    return out
+
+
+def save_testsuites(suites: list[dict]) -> None:
+    with _lock, _connect() as con:
+        con.execute("PRAGMA foreign_keys=ON")
+        con.execute("DELETE FROM testsuite_cases")
+        con.execute("DELETE FROM testsuites")
+        for s in suites:
+            name = str(s.get("name", "")).strip()
+            if not name:
+                continue
+            created_at = str(s.get("created_at", "")).strip() or name
+            cur = con.execute(
+                "INSERT INTO testsuites (name, created_at) VALUES (?, ?)",
+                (name, created_at),
+            )
+            suite_id = int(cur.lastrowid)
+            keys = [str(x).strip() for x in (s.get("testcase_keys") or []) if str(x).strip()]
+            deduped = list(dict.fromkeys(keys))
+            for key in deduped:
+                con.execute(
+                    "INSERT INTO testsuite_cases (suite_id, testcase_key) VALUES (?, ?)",
+                    (suite_id, key),
+                )
 

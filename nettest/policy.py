@@ -94,6 +94,13 @@ _PHASE_DESC: Dict[str, str] = {
 ALL_PHASE_IDS = ["intra-subnet", "intra-vrf", "cross-vrf-allowlist", "cross-vrf-block"]
 
 
+def assign_case_ids(cases: Sequence[TestCase], prefix: str = "tc") -> None:
+    """Assign stable sequential IDs to cases that do not already have one."""
+    for idx, case in enumerate(cases, start=1):
+        if not getattr(case, "case_id", ""):
+            case.case_id = f"{prefix}-{idx:04d}"
+
+
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def generate_test_cases(
@@ -138,6 +145,7 @@ def generate_test_cases(
             reason=reason,
             phase=phase,
         ))
+    assign_case_ids(testcases)
     return testcases
 
 
@@ -257,6 +265,13 @@ def generate_phased_cases(
         if cross_block_cases:
             phases.extend(_batch_phase(
                 cross_block_cases, "cross-vrf-block", 1, max_vms_per_phase))
+
+    running_idx = 1
+    for ph in phases:
+        for case in ph.cases:
+            if not getattr(case, "case_id", ""):
+                case.case_id = f"tc-{running_idx:04d}"
+            running_idx += 1
 
     return phases
 

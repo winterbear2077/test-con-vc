@@ -2,9 +2,10 @@ import { Component, NgZone, OnDestroy, ViewChild, ElementRef } from '@angular/co
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { ClarityModule } from '@clr/angular';
-import { ApiService } from '../api.service';
+import { ApiService, TestSuite } from '../api.service';
 import { ResultPanelComponent } from '../result-panel/result-panel.component';
 import { PluginContextService } from '../plugin-context.service';
+import { Subscription } from 'rxjs';
 
 interface LogLine { text: string; cls: string; }
 
@@ -29,6 +30,8 @@ export class RunTestComponent implements OnDestroy {
   phaseIntraVrf = true;
   phaseCrossVrfAllow = true;
   phaseCrossVrfBlock = true;
+  selectedTestsuite = '';
+  suites: TestSuite[] = [];
 
   running = false;
   indicator: 'idle' | 'running' | 'pass' | 'fail' = 'idle';
@@ -38,10 +41,19 @@ export class RunTestComponent implements OnDestroy {
 
   private _sse: EventSource | null = null;
   private _sseDone = false;
+  private _suiteChangedSub: Subscription | null = null;
 
   constructor(private api: ApiService, private zone: NgZone, private pluginCtx: PluginContextService) {}
 
-  ngOnDestroy() { this._sse?.close(); }
+  ngOnInit() {
+    this.refreshSuites();
+    this._suiteChangedSub = this.api.testsuiteChanged$.subscribe(() => this.refreshSuites());
+  }
+
+  ngOnDestroy() {
+    this._sse?.close();
+    this._suiteChangedSub?.unsubscribe();
+  }
 
   get intraSubnetWarn(): boolean { return this.phaseIntraSubnet && this.vmsPerSubnet < 2; }
 
@@ -52,6 +64,17 @@ export class RunTestComponent implements OnDestroy {
     if (this.phaseCrossVrfAllow) p.push('cross-vrf-allowlist');
     if (this.phaseCrossVrfBlock) p.push('cross-vrf-block');
     return p;
+  }
+
+  refreshSuites() {
+    this.api.getTestSuites().subscribe({
+      next: ({ suites }) => {
+        this.suites = suites || [];
+      },
+      error: () => {
+        this.suites = [];
+      },
+    });
   }
 
   async startRun() {
@@ -81,7 +104,8 @@ export class RunTestComponent implements OnDestroy {
           phased_testing: this.phasedTesting,
           vms_per_subnet: this.vmsPerSubnet,
           max_vms_per_phase: this.maxVmsPerPhase,
-          phases: this.selectedPhases.join(','),
+          phases: this.phasedTesting ? this.selectedPhases.join(',') : '',
+          testsuite: (this.selectedTestsuite || '').trim(),
           vrf_links,
         };
         this.api.startRun(req).subscribe({

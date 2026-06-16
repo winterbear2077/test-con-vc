@@ -28,9 +28,9 @@ from __future__ import annotations
 
 import logging
 import os
-import threading
-import time
 from typing import Any, Optional
+
+from urllib.parse import quote as _url_quote
 
 import requests
 import urllib3
@@ -48,11 +48,11 @@ def _ds_path_to_url(vcenter_host: str, datacenter_name: str, ds_path: str) -> st
     bracket_end = ds_path.index("]")
     ds_name = ds_path[1:bracket_end].strip()
     file_path = ds_path[bracket_end + 1:].strip()
-    encoded_ds   = requests.utils.quote(ds_name,   safe="")
-    encoded_path = requests.utils.quote(file_path, safe="/")
+    encoded_ds   = _url_quote(ds_name,   safe="")
+    encoded_path = _url_quote(file_path, safe="/")
     return (
         f"https://{vcenter_host}/folder/{encoded_path}"
-        f"?dcPath={requests.utils.quote(datacenter_name, safe='')}"
+        f"?dcPath={_url_quote(datacenter_name, safe='')}"
         f"&dsName={encoded_ds}"
     )
 
@@ -63,7 +63,7 @@ def ensure_iso_on_datastore(
     datacenter_name: str,
     datastore_name: str,
     local_iso_path: str,
-    remote_dir: str = "nettest-iso",
+    remote_dir: str = "",
 ) -> str:
     """Upload the memboot ISO to a datastore if not already present.
 

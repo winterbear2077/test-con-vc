@@ -51,6 +51,8 @@ class TestCase:
     tcp_ports: List[int] = field(default_factory=list)
     # Optional direct destination IP for custom point-to-point TCP tests.
     dst_ip: str = ""
+    # Stable identifier used by UI/API case selection.
+    case_id: str = ""
 
 
 @dataclass
