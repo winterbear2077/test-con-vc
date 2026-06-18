@@ -2,7 +2,6 @@ import { Component } from '@angular/core';
 import { ClarityModule } from '@clr/angular';
 import { ConfigComponent } from './config/config.component';
 import { InputNetworksComponent } from './input-networks/input-networks.component';
-import { VrfRulesComponent } from './vrf-rules/vrf-rules.component';
 import { CustomStepTestComponent } from './custom-step-test/custom-step-test.component';
 import { TestsuiteComponent } from './testsuite/testsuite.component';
 import { RunTestComponent } from './run-test/run-test.component';
@@ -13,7 +12,7 @@ import { HistoryComponent } from './history/history.component';
   standalone: true,
   imports: [
     ClarityModule,
-    ConfigComponent, InputNetworksComponent, VrfRulesComponent,
+    ConfigComponent, InputNetworksComponent,
     CustomStepTestComponent, TestsuiteComponent, RunTestComponent, HistoryComponent,
   ],
   templateUrl: './app.component.html',

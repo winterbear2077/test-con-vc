@@ -1,6 +1,7 @@
-import { Component, Input, OnChanges, SimpleChanges } from '@angular/core';
+import { Component, ElementRef, Input, OnChanges, SimpleChanges, ViewChild } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { ClarityModule } from '@clr/angular';
+import html2canvas from 'html2canvas';
 
 const PHASE_NAMES: Record<string, string> = {
   'intra-subnet': 'Intra-Subnet',
@@ -49,7 +50,14 @@ function phaseMeta(phaseId: string): { label: string; color: string } {
 })
 export class ResultPanelComponent implements OnChanges {
   @Input() result: any = null;
+  @ViewChild('matrixExportArea') matrixExportArea?: ElementRef<HTMLElement>;
   processed: any = null;
+  exporting = false;
+  exportMsg = '';
+
+  private readonly EXPORT_MAX_PIXELS = 16_000_000;
+  private readonly EXPORT_MIN_SCALE = 1;
+  private readonly EXPORT_MAX_SCALE = 2.2;
 
   ngOnChanges(changes: SimpleChanges) {
     if (changes['result']) {
@@ -112,6 +120,11 @@ export class ResultPanelComponent implements OnChanges {
 
   cellClass(d: any): string {
     const { expected, actual } = d;
+    if (expected === 'OBSERVE') {
+      if (actual === 'PASS') return 'c-pp';
+      if (actual === 'FAIL') return 'c-pf';
+      return 'c-uk';
+    }
     if (actual === 'UNKNOWN') return 'c-uk';
     if (expected === 'PASS' && actual === 'PASS') return 'c-pp';
     if (expected === 'FAIL' && actual === 'FAIL') return 'c-ff';
@@ -121,6 +134,11 @@ export class ResultPanelComponent implements OnChanges {
 
   cellIcon(d: any): string {
     const { expected, actual } = d;
+    if (expected === 'OBSERVE') {
+      if (actual === 'PASS') return '\u2713';
+      if (actual === 'FAIL') return '\u2717';
+      return '?';
+    }
     if (actual === 'UNKNOWN') return '?';
     if (expected === 'PASS' && actual === 'PASS') return '\u2713';
     if (expected === 'FAIL' && actual === 'FAIL') return '\uD83D\uDD12';
@@ -130,4 +148,331 @@ export class ResultPanelComponent implements OnChanges {
 
   phaseName(ph: string): string { return phaseMeta(ph).label; }
   phaseColor(ph: string): string { return phaseMeta(ph).color; }
+
+  async exportMatrixHtml(): Promise<void> {
+    const host = this.matrixExportArea?.nativeElement;
+    if (!host) {
+      this.exportMsg = 'Matrix area not ready yet';
+      return;
+    }
+    if (!this.processed?.matrices?.length) {
+      this.exportMsg = 'No matrix to export';
+      return;
+    }
+
+    this.exporting = true;
+    this.exportMsg = '';
+    try {
+      const documentText = this.buildExportHtmlDocument(host.outerHTML);
+      const blob = new Blob([documentText], { type: 'text/html;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = this.exportHtmlFileName();
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      this.exportMsg = 'Exported HTML';
+    } catch {
+      this.exportMsg = 'Export failed';
+    } finally {
+      this.exporting = false;
+    }
+  }
+
+  async exportMatrixPng(): Promise<void> {
+    const host = this.matrixExportArea?.nativeElement;
+    if (!host) {
+      this.exportMsg = 'Matrix area not ready yet';
+      return;
+    }
+    if (!this.processed?.matrices?.length) {
+      this.exportMsg = 'No matrix to export';
+      return;
+    }
+
+    this.exporting = true;
+    this.exportMsg = '';
+    const wrapEls = Array.from(host.querySelectorAll<HTMLElement>('.matrix-wrap'));
+    const wrapStyleBackup = wrapEls.map((el) => ({
+      el,
+      overflow: el.style.overflow,
+      maxWidth: el.style.maxWidth,
+      maxHeight: el.style.maxHeight,
+      width: el.style.width,
+      height: el.style.height,
+    }));
+
+    const hostStyleBackup = {
+      width: host.style.width,
+      maxWidth: host.style.maxWidth,
+      overflow: host.style.overflow,
+    };
+
+    try {
+      // Export the full matrix content instead of only the visible scroll area.
+      host.classList.add('exporting-image');
+      for (const w of wrapEls) {
+        w.style.overflow = 'visible';
+        w.style.maxWidth = 'none';
+        w.style.maxHeight = 'none';
+        w.style.width = `${w.scrollWidth}px`;
+        w.style.height = `${w.scrollHeight}px`;
+      }
+      host.style.overflow = 'visible';
+      host.style.maxWidth = 'none';
+      host.style.width = `${Math.max(host.scrollWidth, host.clientWidth)}px`;
+
+      await new Promise<void>((resolve) => {
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+      });
+
+      const captureWidth = Math.max(host.scrollWidth, host.clientWidth, 1);
+      const captureHeight = Math.max(host.scrollHeight, host.clientHeight, 1);
+      const scale = this.computeExportScale(captureWidth, captureHeight);
+
+      const canvas = await html2canvas(host, {
+        backgroundColor: '#ffffff',
+        scale,
+        useCORS: true,
+        logging: false,
+        width: captureWidth,
+        height: captureHeight,
+        windowWidth: Math.max(window.innerWidth, captureWidth),
+        windowHeight: Math.max(window.innerHeight, captureHeight),
+        scrollX: 0,
+        scrollY: 0,
+      });
+
+      const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'));
+      if (!blob) {
+        throw new Error('toBlob returned null');
+      }
+
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = this.exportFileName();
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      this.exportMsg = `Exported PNG (${Math.round(scale * 100)}%)`;
+    } catch {
+      this.exportMsg = 'Export failed';
+    } finally {
+      host.classList.remove('exporting-image');
+      for (const item of wrapStyleBackup) {
+        item.el.style.overflow = item.overflow;
+        item.el.style.maxWidth = item.maxWidth;
+        item.el.style.maxHeight = item.maxHeight;
+        item.el.style.width = item.width;
+        item.el.style.height = item.height;
+      }
+      host.style.width = hostStyleBackup.width;
+      host.style.maxWidth = hostStyleBackup.maxWidth;
+      host.style.overflow = hostStyleBackup.overflow;
+      this.exporting = false;
+    }
+  }
+
+  private computeExportScale(width: number, height: number): number {
+    const dpr = Math.max(1, window.devicePixelRatio || 1);
+    const preferred = Math.min(this.EXPORT_MAX_SCALE, dpr + 0.5);
+    const area = Math.max(1, width * height);
+    const limitByPixels = Math.sqrt(this.EXPORT_MAX_PIXELS / area);
+    return Math.max(this.EXPORT_MIN_SCALE, Math.min(preferred, limitByPixels));
+  }
+
+  private buildExportHtmlDocument(contentHtml: string): string {
+    const title = this.exportDocumentTitle();
+    return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>${this.escapeHtml(title)}</title>
+  <style>
+${this.exportStyles()}
+  </style>
+</head>
+<body>
+  <div class="export-shell">
+    <div class="export-header">
+      <div class="export-title">${this.escapeHtml(title)}</div>
+      <div class="export-meta">
+        <span class="export-chip ${this.processed?.FinalStatus === 'PASS' ? 'ok' : 'bad'}">${this.escapeHtml(String(this.processed?.FinalStatus || 'UNKNOWN'))}</span>
+        <span class="export-chip">${this.escapeHtml(String(this.processed?.passed || 0))} passed</span>
+        <span class="export-chip">${this.escapeHtml(String(this.processed?.failed || 0))} failed</span>
+      </div>
+    </div>
+    ${contentHtml}
+  </div>
+</body>
+</html>`;
+  }
+
+  private exportStyles(): string {
+    return `
+      :root { color-scheme: light; }
+      html, body {
+        margin: 0;
+        padding: 0;
+        background: #f4f7fb;
+        color: #21333b;
+        font-family: Arial, Helvetica, sans-serif;
+      }
+      body { padding: 20px; }
+      .export-shell {
+        background: #fff;
+        border: 1px solid #d8e1ea;
+        border-radius: 12px;
+        box-shadow: 0 10px 30px rgba(17, 24, 39, 0.08);
+        padding: 18px 18px 22px;
+      }
+      .export-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 14px;
+        flex-wrap: wrap;
+      }
+      .export-title { font-size: 18px; font-weight: 700; }
+      .export-meta { display: flex; gap: 8px; flex-wrap: wrap; }
+      .export-chip {
+        display: inline-flex;
+        align-items: center;
+        padding: 4px 10px;
+        border-radius: 999px;
+        background: #edf2f7;
+        color: #334155;
+        font-size: 12px;
+        font-weight: 600;
+      }
+      .export-chip.ok { background: #dcfce7; color: #14532d; }
+      .export-chip.bad { background: #fee2e2; color: #7f1d1d; }
+      .matrix-export-area { background: #fff; }
+      .matrix-wrap { overflow: auto; max-width: 100%; max-height: 70vh; }
+      .matrix-table {
+        font-size: .75rem;
+        border-collapse: separate;
+        border-spacing: 2px;
+      }
+      .matrix-table th {
+        font-size: .7rem;
+        font-weight: 600;
+        background: #f5f5f5;
+        padding: .3rem .5rem;
+        white-space: nowrap;
+        position: sticky;
+        top: 0;
+        z-index: 2;
+      }
+      .matrix-table td {
+        padding: .3rem .45rem;
+        text-align: center;
+        border-radius: 3px;
+        white-space: nowrap;
+      }
+      .matrix-table td:first-child {
+        position: sticky;
+        left: 0;
+        z-index: 1;
+        background: #f5f5f5;
+        font-weight: 600;
+        text-align: left;
+      }
+      .matrix-table thead th:first-child {
+        position: sticky;
+        left: 0;
+        top: 0;
+        z-index: 3;
+      }
+      .c-pp  { background: #dcfce7; color: #14532d; }
+      .c-ff  { background: #f1f5f9; color: #475569; }
+      .c-pf  { background: #fee2e2; color: #7f1d1d; }
+      .c-fp  { background: #fef9c3; color: #713f12; }
+      .c-uk  { background: #fef3c7; color: #78350f; }
+      .c-self{ background: #e2e8f0; color: #94a3b8; }
+      .vrf-badge {
+        display: inline-block;
+        font-size: .62rem;
+        font-weight: 700;
+        padding: 1px 5px;
+        border-radius: 3px;
+        background: #dbeafe;
+        color: #1e40af;
+        vertical-align: middle;
+        margin-left: 3px;
+      }
+      .label { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 999px; font-weight: 600; }
+      .label-success { background: #dcfce7; color: #14532d; }
+      .label-danger { background: #fee2e2; color: #7f1d1d; }
+      .label-info { background: #dbeafe; color: #1e40af; }
+      .label-warning { background: #fef3c7; color: #78350f; }
+      .label-light-blue { background: #e0f2fe; color: #075985; }
+      .label-blue { background: #dbeafe; color: #1d4ed8; }
+      .card {
+        border: 1px solid #e5e7eb;
+        border-radius: 10px;
+        background: #fff;
+      }
+      .card-header {
+        background: #f8fafc;
+        border-bottom: 1px solid #e5e7eb;
+        padding: 8px 10px;
+        border-top-left-radius: 10px;
+        border-top-right-radius: 10px;
+      }
+      .card-block { padding: 10px; }
+      .p6 { font-size: 12px; }
+      .text-muted { color: #64748b; }
+      .text-success { color: #15803d; }
+      .text-danger { color: #b91c1c; }
+      .section-header {
+        font-size: 1.05rem;
+        font-weight: 700;
+        margin-bottom: 10px;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .matrix-export-area > div { margin-bottom: 16px; }
+      @media print {
+        body { background: #fff; padding: 0; }
+        .export-shell { box-shadow: none; border: none; border-radius: 0; }
+      }
+    `;
+  }
+
+  private exportDocumentTitle(): string {
+    return `Result Matrix ${String(this.processed?.Execution?.run_id || this.processed?.RunId || '').trim() || ''}`.trim();
+  }
+
+  private exportHtmlFileName(): string {
+    const runId = String(this.processed?.Execution?.run_id || this.processed?.RunId || '').trim();
+    const now = new Date();
+    const stamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}-${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}${String(now.getSeconds()).padStart(2, '0')}`;
+    const suffix = runId ? `-${runId}` : `-${stamp}`;
+    return `result-matrix${suffix}.html`;
+  }
+
+  private escapeHtml(value: string): string {
+    return value
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  private exportFileName(): string {
+    const runId = String(this.processed?.Execution?.run_id || this.processed?.RunId || '').trim();
+    const now = new Date();
+    const stamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}-${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}${String(now.getSeconds()).padStart(2, '0')}`;
+    const suffix = runId ? `-${runId}` : `-${stamp}`;
+    return `result-matrix${suffix}.png`;
+  }
 }

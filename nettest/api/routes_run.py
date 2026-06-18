@@ -21,7 +21,7 @@ import nettest.db as _db
 from nettest.input_handlers import validate_and_normalize
 from nettest.runner import RunConfig, execute_run
 from nettest.models import TestCase
-from nettest.policy import assign_case_ids, generate_test_cases, parse_vrf_links
+from nettest.policy import assign_case_ids, generate_test_cases
 from nettest.vcenter_utils import connect_vcenter_auto, disconnect_vcenter, get_all_vms_by_moid, delete_vm
 from nettest.api.deps import WORKSPACE, ARTIFACTS, _runs, _read_config, get_session_password
 
@@ -64,7 +64,7 @@ class RunIn(BaseModel):
     phases: str = ""           # comma-separated phase IDs, empty = all
     testsuite: str = ""        # testsuite name; empty = default full run
     testcase_ids: List[str] = []
-    vrf_links: List[str] = []  # "FROM:TO" or "FROM:TO:FAIL"
+    vrf_links: List[str] = []  # kept for backward compatibility
     # Probe communication channel (guestinfo | serial | vsock)
     poll_method: str = "guestinfo"
     serial_probe_host: str = ""
@@ -171,16 +171,30 @@ def api_start_run(req: RunIn, request: Request, x_vcenter_session: str = Header(
 
     selected_suite_name = str(req.testsuite or "").strip()
     selected_suite_case_ids: list[str] = []
+    selected_suite_expectations: dict[str, str] = {}
     if selected_suite_name:
         suites = _db.get_testsuites()
         picked = next((s for s in suites if str(s.get("name", "")).strip() == selected_suite_name), None)
         if not picked:
             raise HTTPException(400, f"testsuite not found: {selected_suite_name}")
-        selected_suite_case_ids = list({
-            str(x).strip()
-            for x in (picked.get("testcase_keys") or [])
-            if str(x).strip()
-        })
+        testcase_rules = list(picked.get("testcase_rules") or [])
+        if testcase_rules:
+            for row in testcase_rules:
+                case_id = str(row.get("testcase_key", "")).strip()
+                if not case_id:
+                    continue
+                action = str(row.get("action", "ALLOW")).strip().upper() or "ALLOW"
+                selected_suite_case_ids.append(case_id)
+                selected_suite_expectations[case_id] = "PASS" if action != "DENY" else "FAIL"
+        else:
+            selected_suite_case_ids = list({
+                str(x).strip()
+                for x in (picked.get("testcase_keys") or [])
+                if str(x).strip()
+            })
+            selected_suite_expectations = {case_id: "PASS" for case_id in selected_suite_case_ids}
+
+        selected_suite_case_ids = list(dict.fromkeys(selected_suite_case_ids))
 
     def _worker() -> None:
         rc = 4
@@ -198,6 +212,7 @@ def api_start_run(req: RunIn, request: Request, x_vcenter_session: str = Header(
                 phases=req.phases,
                 testsuite="",
                 testcase_ids=(selected_suite_case_ids if selected_suite_name else []),
+                testcase_expectations=(selected_suite_expectations if selected_suite_name else {}),
                 vrf_links=list(req.vrf_links),
                 append_custom_cases=append_custom_cases,
                 append_custom_gateway_by_subnet=append_custom_gateway_by_subnet,
@@ -262,18 +277,7 @@ def api_run_catalog():
     rows = _db.get_networks()
     accepted, rejected = validate_and_normalize(rows, "MNGT")
 
-    rule_dicts = [
-        {
-            "from_vrf": str(r.get("from_vrf", "")).strip(),
-            "to_vrf": str(r.get("to_vrf", "")).strip(),
-            "expected": str(r.get("action", "PASS")).strip().upper(),
-            "comment": str(r.get("comment", "")).strip(),
-        }
-        for r in _db.get_vrf_rules()
-    ]
-    vrf_links = parse_vrf_links(rule_dicts)
-
-    cases = generate_test_cases(accepted, set(), vrf_links)
+    cases = generate_test_cases(accepted, set(), ())
     custom_rules = _db.get_custom_step_rules()
     custom_cases, _, _ = _build_custom_cases_from_rules(custom_rules)
     cases.extend(custom_cases)
@@ -283,7 +287,7 @@ def api_run_catalog():
     for case in cases:
         suite_counts[case.phase] = suite_counts.get(case.phase, 0) + 1
 
-    suite_order = ["intra-subnet", "intra-vrf", "cross-vrf-allowlist", "cross-vrf-block"]
+    suite_order = ["network-connectivity"]
     seen = set(suite_order)
     extras = sorted([s for s in suite_counts.keys() if s not in seen])
     ordered_suites = [s for s in suite_order if s in suite_counts] + extras

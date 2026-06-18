@@ -37,7 +37,7 @@
           <clr-select-container>
             <label>Testsuite</label>
             <select clrSelect [(ngModel)]="selectedTestsuite" style="min-width:220px">
-              <option value="">Default (All VRF + Custom)</option>
+              <option value="">Default (Observe Connectivity)</option>
               <option *ngFor="let s of suites" [value]="s.name">{{ s.name }} ({{ (s.testcase_keys || []).length }})</option>
             </select>
           </clr-select-container>

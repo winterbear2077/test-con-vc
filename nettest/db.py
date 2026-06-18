@@ -75,6 +75,7 @@ CREATE TABLE IF NOT EXISTS testsuites (
 CREATE TABLE IF NOT EXISTS testsuite_cases (
     suite_id      INTEGER NOT NULL REFERENCES testsuites(id) ON DELETE CASCADE,
     testcase_key  TEXT NOT NULL DEFAULT '',
+    action        TEXT NOT NULL DEFAULT 'ALLOW',
     PRIMARY KEY (suite_id, testcase_key)
 );
 """
@@ -103,6 +104,11 @@ def init(db_path: Path) -> None:
         # Migration: add isos_json column to created_objects if missing
         try:
             con.execute("ALTER TABLE created_objects ADD COLUMN isos_json TEXT NOT NULL DEFAULT '[]'")
+        except sqlite3.OperationalError:
+            pass  # already exists
+        # Migration: add action column to testsuite_cases if missing
+        try:
+            con.execute("ALTER TABLE testsuite_cases ADD COLUMN action TEXT NOT NULL DEFAULT 'ALLOW'")
         except sqlite3.OperationalError:
             pass  # already exists
         # Security migration: purge any previously stored sensitive config keys
@@ -427,15 +433,23 @@ def get_testsuites() -> list[dict]:
         out: list[dict] = []
         for s in suites:
             case_rows = con.execute(
-                "SELECT testcase_key FROM testsuite_cases WHERE suite_id=? ORDER BY testcase_key",
+                "SELECT testcase_key, action FROM testsuite_cases WHERE suite_id=? ORDER BY testcase_key",
                 (s["id"],),
             ).fetchall()
+            testcase_rules = [
+                {
+                    "testcase_key": r["testcase_key"],
+                    "action": str(r["action"] or "ALLOW").strip().upper() or "ALLOW",
+                }
+                for r in case_rows
+            ]
             out.append(
                 {
                     "id": s["id"],
                     "name": s["name"],
                     "created_at": s["created_at"],
                     "testcase_keys": [r["testcase_key"] for r in case_rows],
+                    "testcase_rules": testcase_rules,
                 }
             )
     return out
@@ -456,11 +470,25 @@ def save_testsuites(suites: list[dict]) -> None:
                 (name, created_at),
             )
             suite_id = int(cur.lastrowid)
-            keys = [str(x).strip() for x in (s.get("testcase_keys") or []) if str(x).strip()]
-            deduped = list(dict.fromkeys(keys))
-            for key in deduped:
+            raw_rules = list(s.get("testcase_rules") or [])
+            if raw_rules:
+                pairs = []
+                for item in raw_rules:
+                    key = str(item.get("testcase_key", "")).strip()
+                    if not key:
+                        continue
+                    action = str(item.get("action", "ALLOW")).strip().upper() or "ALLOW"
+                    if action not in ("ALLOW", "DENY"):
+                        action = "ALLOW"
+                    pairs.append((key, action))
+            else:
+                keys = [str(x).strip() for x in (s.get("testcase_keys") or []) if str(x).strip()]
+                pairs = [(k, "ALLOW") for k in keys]
+
+            deduped: list[tuple[str, str]] = list(dict.fromkeys(pairs))
+            for key, action in deduped:
                 con.execute(
-                    "INSERT INTO testsuite_cases (suite_id, testcase_key) VALUES (?, ?)",
-                    (suite_id, key),
+                    "INSERT INTO testsuite_cases (suite_id, testcase_key, action) VALUES (?, ?, ?)",
+                    (suite_id, key, action),
                 )
 

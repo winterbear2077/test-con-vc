@@ -10,6 +10,14 @@ logger = logging.getLogger(__name__)
 from nettest.models import TestCase, TestResult
 
 
+def _status_from_expectation(expected: str, actual: str) -> str:
+    exp = str(expected or "").strip().upper()
+    act = str(actual or "").strip().upper()
+    if exp == "OBSERVE":
+        return "pass" if act in ("PASS", "FAIL") else "fail"
+    return "pass" if act == exp else "fail"
+
+
 def _ping_once(ip_addr: str, timeout_sec: int) -> bool:
     """Execute local ping command and return success."""
     # macOS ping: -W is wait time in ms; keep conservative timeout.
@@ -272,7 +280,7 @@ def run_icmp_checks(
                     reason_label = "controller-cached"
                 ok: Optional[bool] = probe_cache[cache_key]
                 actual = "PASS" if ok else "FAIL"
-                status = "pass" if actual == case.expected else "fail"
+                status = _status_from_expectation(case.expected, actual)
                 reason = reason_label
 
             results.append(TestResult(
@@ -447,7 +455,7 @@ def run_icmp_checks(
                 reason = probe_reason if probe_reason != "unknown" else "in-guest-probe-unavailable"
             else:
                 actual = "PASS" if ok else "FAIL"
-                status = "pass" if actual == case.expected else "fail"
+                status = _status_from_expectation(case.expected, actual)
                 reason = probe_reason
 
             results.append(TestResult(

@@ -116,6 +116,15 @@ def _prepare_run_inputs(cfg: "RunConfig", raw_rows: List[Dict[str, str]]) -> Dic
     if appended_cases:
         cases = list(cases) + appended_cases
     assign_case_ids(cases)
+
+    # Testsuite can turn each selected testcase into ALLOW(PASS) or DENY(FAIL).
+    testcase_expectations = dict(getattr(cfg, "testcase_expectations", {}) or {})
+    if testcase_expectations:
+        for case in cases:
+            override = str(testcase_expectations.get(case.case_id, "")).strip().upper()
+            if override in ("PASS", "FAIL"):
+                case.expected = override
+
     cases = _filter_cases_by_selection(cases, cfg.testsuite, cfg.testcase_ids)
     if appended_gw:
         gateway_by_subnet.update(appended_gw)
@@ -525,7 +534,7 @@ def _build_result_payload(
 
     return {
         "Plan": {
-            "policy": "same-vrf-pass/cross-vrf-fail-unless-allowlist",
+            "policy": "observe-connectivity-by-default; testsuite allow/deny overrides expectations",
             "probe": "icmp-only",
             "probe_mode": cfg.probe_mode,
             "retry_mode": cfg.retry_mode,
@@ -537,6 +546,8 @@ def _build_result_payload(
             "enabled_phases": (
                 [p.strip() for p in cfg.phases.split(",") if p.strip()] if cfg.phases else ALL_PHASE_IDS
             ),
+            "testsuite": cfg.testsuite,
+            "testcase_expectations": dict(getattr(cfg, "testcase_expectations", {}) or {}),
         },
         "ParsedInput": {
             "accepted_count": len(accepted),
@@ -636,6 +647,7 @@ class RunConfig:
         phases: str = "",
         testsuite: str = "",
         testcase_ids: Optional[List[str]] = None,
+        testcase_expectations: Optional[Dict[str, str]] = None,
         # ── Probe communication channel ───────────────────────────────────────
         poll_method: str = "guestinfo",
         # serial: controller IP reachable by ESXi NFC (auto-detected when empty)
@@ -682,6 +694,7 @@ class RunConfig:
         self.phases = phases
         self.testsuite = testsuite
         self.testcase_ids = testcase_ids or []
+        self.testcase_expectations = testcase_expectations or {}
         self.poll_method = poll_method
         self.serial_probe_host = serial_probe_host
         self.serial_base_port = serial_base_port

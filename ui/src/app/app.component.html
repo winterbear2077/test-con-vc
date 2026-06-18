@@ -17,9 +17,6 @@
         <a class="nav-link" [class.active]="activeTab==='input'" (click)="navTo('input')">
           <clr-icon shape="table" size="16"></clr-icon> Input Networks
         </a>
-        <a class="nav-link" [class.active]="activeTab==='rules'" (click)="navTo('rules')">
-          <clr-icon shape="shield-check" size="16"></clr-icon> VRF Rules
-        </a>
         <a class="nav-link" [class.active]="activeTab==='custom-step'" (click)="navTo('custom-step')">
           <clr-icon shape="plugin" size="16"></clr-icon> Custom Step Test
         </a>
@@ -37,7 +34,6 @@
     <div class="content-area">
       <app-config [hidden]="activeTab!=='config'" (navigate)="navTo($event)"></app-config>
       <app-input-networks [hidden]="activeTab!=='input'"></app-input-networks>
-      <app-vrf-rules [hidden]="activeTab!=='rules'"></app-vrf-rules>
       <app-custom-step-test [hidden]="activeTab!=='custom-step'"></app-custom-step-test>
       <app-testsuite [hidden]="activeTab!=='testsuite'"></app-testsuite>
       <app-run-test [hidden]="activeTab!=='run'"></app-run-test>

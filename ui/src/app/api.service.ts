@@ -54,7 +54,6 @@ export interface RunRequest {
   max_vms_per_phase?: number;
   phases?: string;
   testsuite?: string;
-  vrf_links?: string[];
 }
 
 export interface RunSuite {
@@ -100,6 +99,12 @@ export interface TestSuite {
   name: string;
   created_at?: string;
   testcase_keys: string[];
+  testcase_rules?: TestSuiteCaseRule[];
+}
+
+export interface TestSuiteCaseRule {
+  testcase_key: string;
+  action: 'ALLOW' | 'DENY';
 }
 
 export interface CustomStepRunRequest {
@@ -120,14 +125,6 @@ export interface CustomStepRuleRow {
   protocol: 'tcp' | 'udp' | 'icmp';
   dest: string;
   port: number;
-  comment: string;
-}
-
-export interface VrfRuleRow {
-  id?: number;
-  from_vrf: string;
-  to_vrf: string;
-  action: 'PASS' | 'FAIL';
   comment: string;
 }
 
@@ -283,14 +280,6 @@ export class ApiService {
       {},
       this.sessionHeaders()
     );
-  }
-
-  getVrfRules(): Observable<{ rules: VrfRuleRow[] }> {
-    return this.http.get<{ rules: VrfRuleRow[] }>(this.base + '/vrf-rules');
-  }
-
-  saveVrfRules(rules: VrfRuleRow[]): Observable<any> {
-    return this.http.put<any>(this.base + '/vrf-rules', { rules });
   }
 
   getCustomStepRules(): Observable<{ rules: CustomStepRuleRow[] }> {

@@ -1,7 +1,8 @@
 <div class="section-header"><clr-icon shape="bundle" size="20"></clr-icon> Testsuite</div>
 
 <p class="p6 text-muted" style="margin-bottom:1rem">
-  Create suites from VRF ping and Custom Step testcases. In Run Test, selecting a suite runs only cases in that suite.
+  Create suites from generated network + custom-step testcases. For each testcase, choose ALLOW or DENY.
+  In Run Test: no suite means observe connectivity only; selecting a suite enforces ALLOW/DENY assertions.
 </p>
 
 <div class="clr-row" style="gap:1rem">
@@ -15,7 +16,7 @@
         <div class="card-text" *ngIf="!suites.length">No suite yet.</div>
         <div class="card-text suite-row" *ngFor="let s of suites">
           <button class="btn btn-sm btn-link" (click)="editSuite(s)">{{ s.name }}</button>
-          <span class="label label-light-blue">{{ (s.testcase_keys || []).length }}</span>
+          <span class="label label-light-blue">{{ (s.testcase_rules || s.testcase_keys || []).length }}</span>
           <button class="btn btn-icon btn-sm btn-link" (click)="deleteSuite(s.name)">
             <clr-icon shape="trash" style="color:#c92100"></clr-icon>
           </button>
@@ -43,15 +44,24 @@
           <div class="testcase-list">
             <div class="card-text" *ngIf="!testcases.length">No testcase available. Configure input/rules first.</div>
             <div class="card-text testcase-item" *ngFor="let tc of testcases">
-              <clr-checkbox-wrapper>
-                <input
-                  type="checkbox"
-                  clrCheckbox
-                  [ngModel]="isCaseSelected(tc.id)"
-                  (ngModelChange)="toggleCase(tc.id, $event)"
-                />
-                <label>{{ tc.label }}</label>
-              </clr-checkbox-wrapper>
+              <div style="display:flex;gap:8px;align-items:center;justify-content:space-between;flex-wrap:wrap">
+                <clr-checkbox-wrapper>
+                  <input
+                    type="checkbox"
+                    clrCheckbox
+                    [ngModel]="isCaseSelected(tc.id)"
+                    (ngModelChange)="toggleCase(tc.id, $event)"
+                  />
+                  <label>{{ tc.label }}</label>
+                </clr-checkbox-wrapper>
+                <div style="display:flex;gap:6px;align-items:center" *ngIf="isCaseSelected(tc.id)">
+                  <span class="p7 text-muted">Action</span>
+                  <select clrSelect [ngModel]="actionFor(tc.id)" (ngModelChange)="setAction(tc.id, $event)">
+                    <option value="ALLOW">ALLOW</option>
+                    <option value="DENY">DENY</option>
+                  </select>
+                </div>
+              </div>
             </div>
           </div>
         </div>

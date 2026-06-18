@@ -125,6 +125,7 @@ def api_get_custom_step_testcases():
 class TestSuiteRowIn(BaseModel):
     name: str
     testcase_keys: List[str] = []
+    testcase_rules: List[Dict[str, str]] = []
 
 
 class TestSuitesIn(BaseModel):
@@ -142,6 +143,14 @@ def api_put_testsuites(body: TestSuitesIn):
         {
             "name": str(s.name).strip(),
             "testcase_keys": [str(x).strip() for x in (s.testcase_keys or []) if str(x).strip()],
+            "testcase_rules": [
+                {
+                    "testcase_key": str(r.get("testcase_key", "")).strip(),
+                    "action": str(r.get("action", "ALLOW")).strip().upper() or "ALLOW",
+                }
+                for r in (s.testcase_rules or [])
+                if str(r.get("testcase_key", "")).strip()
+            ],
         }
         for s in body.suites
     ]

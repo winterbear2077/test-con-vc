@@ -108,42 +108,29 @@ def generate_test_cases(
     allowlist: Set[Tuple[str, str]],
     vrf_links: Sequence[VrfLink] = (),
 ) -> List[TestCase]:
-    """Generate test cases for all cross-subnet VM pairs (backward-compatible).
+    """Generate observation test cases for all cross-subnet VM pairs.
 
-    Each returned TestCase has its ``phase`` field set so callers can filter
-    by phase without migrating to :func:`generate_phased_cases`.
+    Legacy arguments are accepted for API compatibility but ignored.
+    Connectivity expectation is assigned by testsuite allow/deny selections.
     """
-    pass_set, _ = _build_effective_sets(allowlist, vrf_links)
+    _ = allowlist
+    _ = vrf_links
     vm_rows = [r for r in rows if r.mode == "vm-provisioned"]
     testcases: List[TestCase] = []
 
     for src, dst in combinations(vm_rows, 2):
         if src.subnet == dst.subnet:
             continue
-
-        if src.vrf == dst.vrf:
-            expected = "PASS"
-            reason   = "same-vrf"
-            phase    = "intra-vrf"
-        else:
-            pair = cast(Tuple[str, str], tuple(sorted((src.vrf, dst.vrf))))
-            if pair in pass_set:
-                expected = "PASS"
-                reason   = "cross-vrf-allowlist"
-                phase    = "cross-vrf-allowlist"
-            else:
-                expected = "FAIL"
-                reason   = "cross-vrf-default-block"
-                phase    = "cross-vrf-block"
+        reason = "same-vrf" if src.vrf == dst.vrf else "cross-vrf"
 
         testcases.append(TestCase(
             src_subnet=src.subnet,
             dst_subnet=dst.subnet,
             src_vrf=src.vrf,
             dst_vrf=dst.vrf,
-            expected=expected,
+            expected="OBSERVE",
             reason=reason,
-            phase=phase,
+            phase="network-connectivity",
         ))
     assign_case_ids(testcases)
     return testcases
@@ -324,12 +311,16 @@ def _batch_phase(
 
 def summarize_expected(cases: Sequence[TestCase]) -> Dict[str, int]:
     out = {
+        "observed": 0,
         "intra_subnet_pass": 0,
         "same_vrf_pass": 0,
         "cross_vrf_fail": 0,
         "cross_vrf_allowlist_pass": 0,
     }
     for c in cases:
+        if c.expected == "OBSERVE":
+            out["observed"] += 1
+            continue
         if c.reason == "intra-subnet-direct":
             out["intra_subnet_pass"] += 1
         elif c.reason == "same-vrf":

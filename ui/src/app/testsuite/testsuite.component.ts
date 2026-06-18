@@ -2,7 +2,7 @@ import { Component, OnInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { ClarityModule } from '@clr/angular';
-import { ApiService, RunTestcase, TestSuite } from '../api.service';
+import { ApiService, RunTestcase, TestSuite, TestSuiteCaseRule } from '../api.service';
 
 @Component({
   selector: 'app-testsuite',
@@ -17,6 +17,7 @@ export class TestsuiteComponent implements OnInit {
 
   editingName = '';
   selectedCaseIds = new Set<string>();
+  caseActions: Record<string, 'ALLOW' | 'DENY'> = {};
   saveMsg = '';
 
   constructor(private api: ApiService) {}
@@ -48,12 +49,25 @@ export class TestsuiteComponent implements OnInit {
   newSuite() {
     this.editingName = '';
     this.selectedCaseIds.clear();
+    this.caseActions = {};
     this.saveMsg = '';
   }
 
   editSuite(s: TestSuite) {
     this.editingName = s.name;
-    this.selectedCaseIds = new Set((s.testcase_keys || []).filter(Boolean));
+    const rules = (s.testcase_rules || []).filter(r => !!r?.testcase_key);
+    if (rules.length) {
+      this.selectedCaseIds = new Set(rules.map(r => r.testcase_key));
+      this.caseActions = {};
+      rules.forEach(r => {
+        this.caseActions[r.testcase_key] = r.action === 'DENY' ? 'DENY' : 'ALLOW';
+      });
+    } else {
+      const keys = (s.testcase_keys || []).filter(Boolean);
+      this.selectedCaseIds = new Set(keys);
+      this.caseActions = {};
+      keys.forEach(k => this.caseActions[k] = 'ALLOW');
+    }
     this.saveMsg = '';
   }
 
@@ -62,16 +76,34 @@ export class TestsuiteComponent implements OnInit {
   }
 
   toggleCase(caseId: string, checked: boolean) {
-    if (checked) this.selectedCaseIds.add(caseId);
-    else this.selectedCaseIds.delete(caseId);
+    if (checked) {
+      this.selectedCaseIds.add(caseId);
+      if (!this.caseActions[caseId]) this.caseActions[caseId] = 'ALLOW';
+    } else {
+      this.selectedCaseIds.delete(caseId);
+      delete this.caseActions[caseId];
+    }
+  }
+
+  actionFor(caseId: string): 'ALLOW' | 'DENY' {
+    return this.caseActions[caseId] === 'DENY' ? 'DENY' : 'ALLOW';
+  }
+
+  setAction(caseId: string, action: 'ALLOW' | 'DENY') {
+    if (!this.selectedCaseIds.has(caseId)) return;
+    this.caseActions[caseId] = action === 'DENY' ? 'DENY' : 'ALLOW';
   }
 
   selectAllCases() {
-    this.testcases.forEach(tc => this.selectedCaseIds.add(tc.id));
+    this.testcases.forEach(tc => {
+      this.selectedCaseIds.add(tc.id);
+      if (!this.caseActions[tc.id]) this.caseActions[tc.id] = 'ALLOW';
+    });
   }
 
   clearCases() {
     this.selectedCaseIds.clear();
+    this.caseActions = {};
   }
 
   saveSuite() {
@@ -87,9 +119,14 @@ export class TestsuiteComponent implements OnInit {
 
     const updated: TestSuite[] = [...this.suites];
     const idx = updated.findIndex(s => s.name === name);
+    const testcaseRules: TestSuiteCaseRule[] = [...this.selectedCaseIds]
+      .map((id) => ({ testcase_key: id, action: this.actionFor(id) }))
+      .sort((a, b) => a.testcase_key.localeCompare(b.testcase_key));
+
     const row: TestSuite = {
       name,
-      testcase_keys: [...this.selectedCaseIds],
+      testcase_keys: testcaseRules.map(r => r.testcase_key),
+      testcase_rules: testcaseRules,
     };
 
     if (idx >= 0) updated[idx] = row;

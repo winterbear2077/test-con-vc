@@ -8,7 +8,18 @@
         <span *ngIf="processed.failed" class="label label-danger">&#x2717; {{ processed.failed }} failed</span>
         <span class="p6 text-muted">{{ processed.total }} test cases &middot; {{ processed.Plan?.probe_mode }}</span>
         <span *ngIf="processed.Plan?.phased_testing" class="label label-info">Phased</span>
+        <span style="margin-left:auto;display:flex;align-items:center;gap:8px">
+          <button class="btn btn-sm btn-outline" (click)="exportMatrixHtml()" [disabled]="exporting || !processed.matrices?.length">
+            <clr-icon shape="file" size="14"></clr-icon> Export Matrix HTML
+          </button>
+          <button class="btn btn-sm btn-outline" (click)="exportMatrixPng()" [disabled]="exporting || !processed.matrices?.length">
+            <clr-icon shape="download" size="14"></clr-icon> {{ exporting ? 'Exporting...' : 'Export Matrix PNG' }}
+          </button>
+          <span class="p7 text-muted" *ngIf="exportMsg">{{ exportMsg }}</span>
+        </span>
       </div>
+
+      <div #matrixExportArea class="matrix-export-area">
 
       <div *ngIf="processed.Phases?.length" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:1rem">
         <div *ngFor="let p of processed.Phases" class="card" style="min-width:130px;max-width:170px;margin:0">
@@ -51,7 +62,7 @@
                   <ng-container *ngIf="src!==dst">
                     <span *ngFor="let cell of cellsFor(matrix, src, dst)"
                           [class]="cellClass(cell)"
-                          [title]="'expected:'+cell.expected+' actual:'+cell.actual+' reason:'+cell.reason"
+                        [title]="'src:'+cell.src_subnet+' dest:'+cell.dst_subnet+' expected:'+cell.expected+' actual:'+cell.actual+' reason:'+cell.reason"
                           style="display:inline-block;border-radius:3px;padding:1px 4px;font-size:.85em">
                       {{ cellIcon(cell) }}<br><span style="font-size:.65em">{{ cell.actual }}</span>
                     </span>
@@ -65,11 +76,13 @@
       </div>
 
       <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:8px" class="p6 text-muted">
-        <span><span class="c-pp" style="padding:1px 5px;border-radius:3px">&#x2713;</span> Reachable (expected)</span>
-        <span><span class="c-ff" style="padding:1px 5px;border-radius:3px">&#x1F512;</span> Blocked (expected)</span>
-        <span><span class="c-pf" style="padding:1px 5px;border-radius:3px">&#x2717;</span> Should reach, blocked</span>
-        <span><span class="c-fp" style="padding:1px 5px;border-radius:3px">&#x26A0;</span> Should block, reachable!</span>
+        <span><span class="c-pp" style="padding:1px 5px;border-radius:3px">&#x2713;</span> Reachable (or ALLOW matched)</span>
+        <span><span class="c-pf" style="padding:1px 5px;border-radius:3px">&#x2717;</span> Blocked (or ALLOW mismatch)</span>
+        <span><span class="c-ff" style="padding:1px 5px;border-radius:3px">&#x1F512;</span> DENY matched (blocked as expected)</span>
+        <span><span class="c-fp" style="padding:1px 5px;border-radius:3px">&#x26A0;</span> DENY mismatch (reachable unexpectedly)</span>
         <span><span class="c-uk" style="padding:1px 5px;border-radius:3px">?</span> Unknown</span>
+      </div>
+
       </div>
 
       <clr-alert *ngIf="processed.Cleanup?.vm_cleanup?.retained_vms?.length" [clrAlertType]="'warning'" style="margin-top:1rem">
