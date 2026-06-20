@@ -19,7 +19,7 @@ import sys as _sys
 _uvloop = [] if _sys.platform == "win32" else collect_submodules("uvloop")
 
 hiddenimports = (
-    ["uvicorn"]
+    ["uvicorn", "uvicorn.config", "uvicorn.main", "uvicorn.server"]
     +
     collect_submodules("uvicorn")
     + collect_submodules("fastapi")
@@ -31,27 +31,14 @@ hiddenimports = (
     + collect_submodules("paramiko")
     + collect_submodules("requests")
     + collect_submodules("nettest")
+    + collect_submodules("h11")
+    + collect_submodules("httptools")
+    + collect_submodules("websockets")
     + _uvloop
     + [
         "email.mime.text",
         "email.mime.multipart",
         "email.mime.base",
-        "uvicorn.logging",
-        "uvicorn.loops",
-        "uvicorn.loops.asyncio",
-        "uvicorn.protocols",
-        "uvicorn.protocols.http",
-        "uvicorn.protocols.http.auto",
-        "uvicorn.protocols.websockets",
-        "uvicorn.protocols.websockets.auto",
-        "uvicorn.lifespan",
-        "uvicorn.lifespan.on",
-        "h11",
-        "httptools",
-        "websockets",
-        "watchfiles",
-        "multipart",
-        "python_multipart",
         "cryptography",
         "cryptography.hazmat.primitives",
         "cryptography.hazmat.primitives.asymmetric",
