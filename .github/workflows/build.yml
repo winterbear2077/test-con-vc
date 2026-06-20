@@ -18,7 +18,7 @@ jobs:
       - name: Build nettest-mini.iso
         run: |
           set -euo pipefail
-          sh ovf/build_mini_iso.sh ovf/nettest-mini.iso --skip-probe-build
+          sh ovf/build_mini_iso.sh --skip-probe-build
 
       - name: Upload ISO artifact
         uses: actions/upload-artifact@v4
