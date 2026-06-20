@@ -16,33 +16,33 @@ from PyInstaller.utils.hooks import collect_submodules, collect_data_files
 import sys as _sys
 
 # ── Hidden imports ─────────────────────────────────────────────────────────────
-_uvloop = [] if _sys.platform == "win32" else collect_submodules("uvloop")
+# Minimal explicit imports; PyInstaller will discover dependencies via static analysis.
+# AVOID listing submodules explicitly—they cause "not found" errors in CI environments.
+_uvloop = [] if _sys.platform == "win32" else ["uvloop"]
 
-# Only list packages that definitely exist; let PyInstaller discover submodules
-# recursively. Explicitly listing non-existent submodules causes "not found" errors.
 hiddenimports = (
-    collect_submodules("uvicorn")
-    + collect_submodules("fastapi")
-    + collect_submodules("starlette")
-    + collect_submodules("anyio")
-    + collect_submodules("pyvmomi")
-    + collect_submodules("pyVim")
-    + collect_submodules("openpyxl")
-    + collect_submodules("paramiko")
-    + collect_submodules("requests")
-    + collect_submodules("nettest")
-    + collect_submodules("cryptography")
-    + collect_submodules("h11")
-    + collect_submodules("httptools")
-    + collect_submodules("websockets")
-    + _uvloop
-    + [
+    [
+        "uvicorn",
+        "fastapi",
+        "starlette",
+        "anyio",
+        "pyvmomi",
+        "pyVim",
+        "openpyxl",
+        "paramiko",
+        "requests",
+        "nettest",
+        "cryptography",
+        "h11",
+        "httptools",
+        "websockets",
         "email.mime.text",
         "email.mime.multipart",
         "email.mime.base",
         "web_app",
         "nettest_runner",
     ]
+    + _uvloop
 )
 
 # ── Data files ─────────────────────────────────────────────────────────────────
