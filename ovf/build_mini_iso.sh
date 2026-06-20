@@ -11,6 +11,7 @@
 #
 # Usage:
 #   ./ovf/build_mini_iso.sh [output.iso] [--skip-probe-build]
+#   ./ovf/build_mini_iso.sh [--skip-probe-build] [output.iso]
 #
 # Defaults:
 #   output.iso   ovf/nettest-mini.iso
@@ -24,12 +25,29 @@
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-OUTPUT_ISO="${1:-${SCRIPT_DIR}/nettest-mini.iso}"
 SKIP_PROBE_BUILD=0
+OUTPUT_ISO="${SCRIPT_DIR}/nettest-mini.iso"
 
 for arg in "$@"; do
-    case "$arg" in --skip-probe-build) SKIP_PROBE_BUILD=1 ;; esac
+    case "$arg" in
+        --skip-probe-build)
+            SKIP_PROBE_BUILD=1
+            ;;
+        --*)
+            echo "ERROR: unknown option: $arg"
+            exit 2
+            ;;
+        *)
+            OUTPUT_ISO="$arg"
+            ;;
+    esac
 done
+
+# Normalize OUTPUT_ISO to an absolute path for reliable same-file checks.
+case "$OUTPUT_ISO" in
+    /*) ;;
+    *) OUTPUT_ISO="$(cd "$(dirname "$OUTPUT_ISO")" && pwd)/$(basename "$OUTPUT_ISO")" ;;
+esac
 
 BINARY="${SCRIPT_DIR}/netprobe"
 INIT_SCRIPT="${SCRIPT_DIR}/init"
