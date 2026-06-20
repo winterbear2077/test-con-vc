@@ -50,17 +50,49 @@ jobs:
       - name: Build with PyInstaller
         run: pyinstaller vcnet-test.spec --clean
 
+      - name: Prepare bundle layout (macOS / Linux)
+        if: runner.os != 'Windows'
+        run: |
+          set -euo pipefail
+          ISO_SRC="ovf/nettest-mini.iso"
+          if [ ! -f "$ISO_SRC" ]; then
+            echo "ERROR: required ISO missing: $ISO_SRC"
+            exit 1
+          fi
+
+          rm -rf bundle
+          mkdir -p bundle/vcnet-test/ovf
+          cp -R dist/vcnet-test/. bundle/vcnet-test/
+          cp "$ISO_SRC" bundle/vcnet-test/ovf/
+
+      - name: Prepare bundle layout (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $isoSrc = "ovf/nettest-mini.iso"
+          if (!(Test-Path $isoSrc)) {
+            throw "required ISO missing: $isoSrc"
+          }
+
+          if (Test-Path bundle) {
+            Remove-Item -Recurse -Force bundle
+          }
+
+          New-Item -ItemType Directory -Path bundle\vcnet-test\ovf | Out-Null
+          Copy-Item -Recurse dist\vcnet-test\* bundle\vcnet-test\
+          Copy-Item $isoSrc bundle\vcnet-test\ovf\
+
       - name: Package (macOS / Linux)
         if: runner.os != 'Windows'
         run: |
-          cd dist
+          cd bundle
           tar -czf ../${{ matrix.asset }} vcnet-test/
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          Compress-Archive -Path dist\vcnet-test -DestinationPath ${{ matrix.asset }}
+          Compress-Archive -Path bundle\vcnet-test -DestinationPath ${{ matrix.asset }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

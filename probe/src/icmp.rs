@@ -68,20 +68,37 @@ pub fn ping_once(dst: [u8; 4], id: u16, seq: u16, timeout_ms: u64) -> bool {
         let ok = if sent < 0 {
             false
         } else {
-            // Drain up to 8 packets; skip ICMP unreachables by checking id.
+            // Drain up to 8 packets; accept only matching echo reply from target.
             let mut matched = false;
             for _ in 0..8u8 {
                 let mut buf = [0u8; 128];
-                let n = libc::recv(fd, buf.as_mut_ptr() as _, buf.len(), 0);
+                let mut src_addr = SockaddrIn4 {
+                    sin_family: 0,
+                    sin_port: 0,
+                    sin_addr: 0,
+                    sin_zero: [0; 8],
+                };
+                let mut src_len = std::mem::size_of::<SockaddrIn4>() as libc::socklen_t;
+                let n = libc::recvfrom(
+                    fd,
+                    buf.as_mut_ptr() as _,
+                    buf.len(),
+                    0,
+                    &mut src_addr as *mut _ as *mut libc::sockaddr,
+                    &mut src_len as *mut _,
+                );
                 if n < 0 { break; }
                 let n = n as usize;
                 // Strip IP header (low nibble of byte 0, * 4)
                 let ihl = ((buf[0] & 0xf) as usize) * 4;
                 if n < ihl + 8 { continue; }
                 let icmp = &buf[ihl..n];
-                // type=0 (ECHO REPLY), code=0, id matches
+                let src_ip = src_addr.sin_addr.to_ne_bytes();
+                // type=0 (ECHO REPLY), code=0, src/id/seq all match
                 if icmp[0] == 0 && icmp[1] == 0
                     && u16::from_be_bytes([icmp[4], icmp[5]]) == id
+                    && u16::from_be_bytes([icmp[6], icmp[7]]) == seq
+                    && src_ip == dst
                 {
                     matched = true;
                     break;
