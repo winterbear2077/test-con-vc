@@ -16,29 +16,14 @@ from PyInstaller.utils.hooks import collect_submodules, collect_data_files
 import sys as _sys
 
 # ── Hidden imports ─────────────────────────────────────────────────────────────
-# Minimal explicit imports; PyInstaller will discover dependencies via static analysis.
-# AVOID listing submodules explicitly—they cause "not found" errors in CI environments.
+# Keep hiddenimports minimal. PyInstaller will discover dependencies through:
+# 1. Static analysis of imported modules in main.py
+# 2. Automatic traversal of package dependencies
+# Listing packages explicitly that PyInstaller can't find causes "not found" errors.
 _uvloop = [] if _sys.platform == "win32" else ["uvloop"]
 
 hiddenimports = (
     [
-        "uvicorn",
-        "fastapi",
-        "starlette",
-        "anyio",
-        "pyvmomi",
-        "pyVim",
-        "openpyxl",
-        "paramiko",
-        "requests",
-        "nettest",
-        "cryptography",
-        "h11",
-        "httptools",
-        "websockets",
-        "email.mime.text",
-        "email.mime.multipart",
-        "email.mime.base",
         "web_app",
         "nettest_runner",
     ]
