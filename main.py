@@ -19,6 +19,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import uvicorn
+
 
 def _generate_self_signed_cert(cert_path, key_path, host: str) -> None:
     """Generate a self-signed TLS certificate using the cryptography library."""
@@ -92,7 +94,6 @@ def main() -> None:
     import socket
     import threading
     import webbrowser
-    import uvicorn
     # Import the app object directly — passing a string import path fails
     # in frozen mode because uvicorn can't find the module on disk.
     from web_app import app

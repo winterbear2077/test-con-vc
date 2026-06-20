@@ -7,6 +7,8 @@ import { PluginContextService } from '../plugin-context.service';
 
 interface EditableRow extends NetworkRow { _mngt?: boolean; }
 
+interface InventoryRow extends EditableRow {}
+
 @Component({
   selector: 'app-input-networks',
   standalone: true,
@@ -64,9 +66,9 @@ export class InputNetworksComponent implements OnInit {
     this.api.getInventory().subscribe({
       next: inv => {
         this.inventory = inv;
-        this.rows = this._rowsFromInventory(inv);
+        this.rows = this._mergeRowsWithInventory(this.rows, this._rowsFromInventory(inv));
         this.syncing = false;
-        this.msg = '✓ Loaded ' + this.rows.length + ' network row(s) from vCenter';
+        this.msg = '✓ Merged ' + this.rows.length + ' network row(s) from vCenter';
         setTimeout(() => this.msg = '', 4000);
       },
       error: err => {
@@ -77,9 +79,94 @@ export class InputNetworksComponent implements OnInit {
     });
   }
 
+  /** Merge existing rows with freshly synced inventory rows.
+   *
+   * Matching priority:
+   *   1. datacenter + cluster + pg + vlan
+   *   2. datacenter + cluster + vlan
+   *   3. datacenter + cluster + pg
+   *   4. datacenter + cluster
+   *
+   * Existing user-entered subnet/gw/vrf values are preserved; inventory values
+   * fill blanks and normalize pg/vlan metadata.
+   */
+  private _mergeRowsWithInventory(existingRows: EditableRow[], inventoryRows: EditableRow[]): EditableRow[] {
+    const used = new Set<number>();
+    const merged: EditableRow[] = [];
+
+    const existing = existingRows.map(row => ({
+      ...row,
+      _mngt: (row['cluster'] || '').toUpperCase() === 'MNGT',
+    }));
+
+    for (const invRow of inventoryRows) {
+      const matchIndex = this._findBestMatchingRow(existing, used, invRow);
+      if (matchIndex >= 0) {
+        used.add(matchIndex);
+        merged.push(this._mergeRow(existing[matchIndex], invRow));
+      } else {
+        merged.push({ ...invRow, _mngt: (invRow['cluster'] || '').toUpperCase() === 'MNGT' });
+      }
+    }
+
+    // Keep user rows that do not exist in inventory so manual entries are not lost.
+    existing.forEach((row, idx) => {
+      if (!used.has(idx)) {
+        merged.push(row);
+      }
+    });
+
+    return merged;
+  }
+
+  private _findBestMatchingRow(existingRows: EditableRow[], used: Set<number>, invRow: EditableRow): number {
+    const keys = [
+      (row: EditableRow) => this._sameKey(row, invRow, ['datacenter', 'cluster', 'pg', 'vlan']),
+      (row: EditableRow) => this._sameKey(row, invRow, ['datacenter', 'cluster', 'vlan']),
+      (row: EditableRow) => this._sameKey(row, invRow, ['datacenter', 'cluster', 'pg']),
+      (row: EditableRow) => this._sameKey(row, invRow, ['datacenter', 'cluster']),
+    ];
+
+    for (const predicate of keys) {
+      const idx = existingRows.findIndex((row, rowIdx) => !used.has(rowIdx) && predicate(row));
+      if (idx >= 0) return idx;
+    }
+    return -1;
+  }
+
+  private _sameKey(a: EditableRow, b: EditableRow, fields: Array<keyof EditableRow>): boolean {
+    return fields.every((field) => this._norm(a[field]) === this._norm(b[field]));
+  }
+
+  private _norm(value: any): string {
+    return String(value ?? '').trim().toLowerCase();
+  }
+
+  private _mergeRow(existing: EditableRow, invRow: EditableRow): EditableRow {
+    const merged: EditableRow = {
+      ...invRow,
+      ...existing,
+      datacenter: existing.datacenter || invRow.datacenter || '',
+      cluster: existing.cluster || invRow.cluster || '',
+      pg: existing['pg'] || invRow['pg'] || '',
+      vlan: existing['vlan'] || invRow['vlan'] || '',
+      subnet: existing.subnet || invRow.subnet || '',
+      gw: existing.gw || invRow.gw || '',
+      vrf: existing.vrf || invRow.vrf || '',
+      _mngt: (existing.cluster || invRow.cluster || '').toUpperCase() === 'MNGT',
+    };
+
+    // If inventory knows the VLAN and the row already has a portgroup, keep them aligned.
+    if (merged['pg'] && invRow['pg'] && merged['pg'] === invRow['pg'] && invRow['vlan']) {
+      merged['vlan'] = merged['vlan'] || invRow['vlan'];
+    }
+
+    return merged;
+  }
+
   /** Flatten the vCenter inventory into the current table structure. */
-  private _rowsFromInventory(inv: VcInventory): EditableRow[] {
-    const rows: EditableRow[] = [];
+  private _rowsFromInventory(inv: VcInventory): InventoryRow[] {
+    const rows: InventoryRow[] = [];
     const dcs = inv.datacenters || [];
     for (const dc of dcs) {
       const clusters = inv.clusters?.[dc] || [];
