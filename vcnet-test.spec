@@ -18,9 +18,9 @@ import sys as _sys
 # ── Hidden imports ─────────────────────────────────────────────────────────────
 _uvloop = [] if _sys.platform == "win32" else collect_submodules("uvloop")
 
+# Only list packages that definitely exist; let PyInstaller discover submodules
+# recursively. Explicitly listing non-existent submodules causes "not found" errors.
 hiddenimports = (
-    ["uvicorn", "uvicorn.config", "uvicorn.main", "uvicorn.server"]
-    +
     collect_submodules("uvicorn")
     + collect_submodules("fastapi")
     + collect_submodules("starlette")
@@ -31,6 +31,7 @@ hiddenimports = (
     + collect_submodules("paramiko")
     + collect_submodules("requests")
     + collect_submodules("nettest")
+    + collect_submodules("cryptography")
     + collect_submodules("h11")
     + collect_submodules("httptools")
     + collect_submodules("websockets")
@@ -39,14 +40,6 @@ hiddenimports = (
         "email.mime.text",
         "email.mime.multipart",
         "email.mime.base",
-        "cryptography",
-        "cryptography.hazmat.primitives",
-        "cryptography.hazmat.primitives.asymmetric",
-        "cryptography.hazmat.primitives.asymmetric.rsa",
-        "cryptography.hazmat.primitives.hashes",
-        "cryptography.hazmat.primitives.serialization",
-        "cryptography.x509",
-        "cryptography.x509.oid",
         "web_app",
         "nettest_runner",
     ]
