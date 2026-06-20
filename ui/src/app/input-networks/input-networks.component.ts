@@ -63,9 +63,10 @@ export class InputNetworksComponent implements OnInit {
 
     this.api.getInventory().subscribe({
       next: inv => {
-        this.inventory = inv; this.syncing = false;
-        this._validateRowsAgainstInventory(inv);
-        this.msg = '✓ Loaded ' + (inv.datacenters || []).length + ' DC(s) from vCenter';
+        this.inventory = inv;
+        this.rows = this._rowsFromInventory(inv);
+        this.syncing = false;
+        this.msg = '✓ Loaded ' + this.rows.length + ' network row(s) from vCenter';
         setTimeout(() => this.msg = '', 4000);
       },
       error: err => {
@@ -74,6 +75,36 @@ export class InputNetworksComponent implements OnInit {
         this.msg = '✗ Sync failed: ' + detail;
       }
     });
+  }
+
+  /** Flatten the vCenter inventory into the current table structure. */
+  private _rowsFromInventory(inv: VcInventory): EditableRow[] {
+    const rows: EditableRow[] = [];
+    const dcs = inv.datacenters || [];
+    for (const dc of dcs) {
+      const clusters = inv.clusters?.[dc] || [];
+      for (const cluster of clusters) {
+        const pgs = inv.portgroups?.[dc]?.[cluster] || [];
+        if (!pgs.length) {
+          rows.push({ datacenter: dc, cluster, pg: '', vlan: '', subnet: '', gw: '', vrf: '', _mngt: cluster.toUpperCase() === 'MNGT' });
+          continue;
+        }
+        for (const pg of pgs) {
+          const hasVlan = pg.vlan && pg.vlan !== '0';
+          rows.push({
+            datacenter: dc,
+            cluster,
+            pg: pg.name,
+            vlan: hasVlan ? pg.vlan : '',
+            subnet: '',
+            gw: '',
+            vrf: '',
+            _mngt: cluster.toUpperCase() === 'MNGT',
+          });
+        }
+      }
+    }
+    return rows;
   }
 
   /** For each row that has a pg set, verify it exists in inventory for that dc/cluster.
