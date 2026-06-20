@@ -76,6 +76,13 @@ jobs:
       - name: Build with PyInstaller
         run: pyinstaller vcnet-test.spec --clean
 
+      - name: Sign macOS bundle
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          codesign --force --deep --sign - --timestamp=none dist/vcnet-test
+          codesign --verify --deep --strict --verbose=2 dist/vcnet-test
+
       - name: Prepare bundle layout (macOS / Linux)
         if: runner.os != 'Windows'
         run: |
@@ -90,6 +97,11 @@ jobs:
           mkdir -p bundle/vcnet-test/ovf
           cp -R dist/vcnet-test/. bundle/vcnet-test/
           cp "$ISO_SRC" bundle/vcnet-test/ovf/
+
+      - name: Strip macOS quarantine xattrs
+        if: runner.os == 'macOS'
+        run: |
+          xattr -dr com.apple.quarantine bundle/vcnet-test || true
 
       - name: Prepare bundle layout (Windows)
         if: runner.os == 'Windows'

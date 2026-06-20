@@ -19,6 +19,8 @@ import sys as _sys
 _uvloop = [] if _sys.platform == "win32" else collect_submodules("uvloop")
 
 hiddenimports = (
+    ["uvicorn"]
+    +
     collect_submodules("uvicorn")
     + collect_submodules("fastapi")
     + collect_submodules("starlette")
