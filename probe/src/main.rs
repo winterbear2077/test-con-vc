@@ -96,47 +96,63 @@ fn main() {
         .ok().and_then(|s| s.parse().ok()).unwrap_or(300);
 
     // ── Channel 1: serial (/dev/ttyS0) ───────────────────────────────────────
-    // Send hello once and wait up to serial_wait_secs for the controller to
-    // respond with config.  This single attempt avoids the double-hello race
-    // where a short fast-path timeout causes a second hello to be sent while
-    // the controller is already waiting for the probe's "done" reply.
+    // Long-lived mode: after each completed probe round (or disconnect), send
+    // hello again and wait for the next command so Python retries can re-probe
+    // without recreating the VM.
     let is_serial = std::fs::metadata("/dev/ttyS0")
         .map(|m| m.file_type().is_char_device())
         .unwrap_or(false);
 
     if is_serial {
-        log(
-            &mut *logf,
-            &format!("  Trying serial (/dev/ttyS0) — hello sent, waiting up to {}s...", serial_wait_secs),
-        );
-        match run_serial_protocol(&mut *logf, serial_wait_secs) {
-            Ok(()) => {
-                log(&mut *logf, "  Channel: serial — done");
-                finish(logf, Ok(()));
-                return;
-            }
-            Err(e) => {
-                log(
-                    &mut *logf,
-                    &format!("  serial timed out ({}s): {} — trying vsock/guestinfo", serial_wait_secs, e),
-                );
+        log(&mut *logf, "  Channel: serial (long-lived)");
+        loop {
+            log(
+                &mut *logf,
+                &format!("  Serial round start — hello sent, waiting up to {}s...", serial_wait_secs),
+            );
+            match run_serial_protocol(&mut *logf, serial_wait_secs) {
+                Ok(()) => {
+                    log(&mut *logf, "  Serial round complete; waiting for next command...");
+                    continue;
+                }
+                Err(e) => {
+                    log(
+                        &mut *logf,
+                        &format!("  serial round failed: {} (will retry serial)", e),
+                    );
+                    std::thread::sleep(Duration::from_millis(500));
+                }
             }
         }
     }
 
     // ── Channel 2: vsock ──────────────────────────────────────────────────────
-    match vsock_connect(vsock_port, 3) {
-        Ok(sock) => {
-            log(&mut *logf, &format!("  Channel: vsock (port={})", vsock_port));
-            let result: io::Result<()> = (|| {
-                let mut reader = BufReader::new(sock.try_clone()?);
-                let mut writer = BufWriter::new(sock);
-                run_probe_protocol(&mut *logf, &mut reader, &mut writer)
-            })();
-            finish(logf, result);
-            return;
+    // Long-lived mode: reconnect and continue serving new rounds whenever the
+    // controller closes the current vsock stream.
+    let mut vsock_seen = false;
+    loop {
+        match vsock_connect(vsock_port, 3) {
+            Ok(sock) => {
+                vsock_seen = true;
+                log(&mut *logf, &format!("  Channel: vsock connected (port={})", vsock_port));
+                let result: io::Result<()> = (|| {
+                    let mut reader = BufReader::new(sock.try_clone()?);
+                    let mut writer = BufWriter::new(sock);
+                    run_probe_protocol(&mut *logf, &mut reader, &mut writer)
+                })();
+                match result {
+                    Ok(()) => log(&mut *logf, "  vsock round complete/disconnected; waiting reconnect..."),
+                    Err(e) => log(&mut *logf, &format!("  vsock protocol error: {}", e)),
+                }
+                std::thread::sleep(Duration::from_millis(300));
+            }
+            Err(e) => {
+                if !vsock_seen {
+                    log(&mut *logf, &format!("  vsock unavailable: {}", e));
+                }
+                break;
+            }
         }
-        Err(e) => log(&mut *logf, &format!("  vsock unavailable: {}", e)),
     }
 
     // ── Channel 3: guestinfo (vmtoolsd) ──────────────────────────────────────

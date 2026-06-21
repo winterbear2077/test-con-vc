@@ -13,3 +13,22 @@
 		top: auto !important;
 	}
 }
+
+.cell-tooltip {
+	white-space: normal;
+	min-width: 220px;
+	max-width: 320px;
+	line-height: 1.35;
+	font-size: 0.78rem;
+	word-break: break-word;
+}
+
+.cell-tooltip-label {
+	font-weight: 600;
+	margin-right: 0.35rem;
+	color: #2c3e50;
+}
+
+.cell-tooltip-value {
+	color: #34495e;
+}

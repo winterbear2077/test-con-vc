@@ -78,7 +78,11 @@ def ensure_iso_on_datastore(
         return local_iso_path
 
     iso_name = os.path.basename(local_iso_path)
-    ds_path  = f"[{datastore_name}] {remote_dir}/{iso_name}"
+    remote_dir_clean = str(remote_dir or "").strip().strip("/")
+    if remote_dir_clean:
+        ds_path = f"[{datastore_name}] {remote_dir_clean}/{iso_name}"
+    else:
+        ds_path = f"[{datastore_name}] {iso_name}"
     url      = _ds_path_to_url(vcenter_host, datacenter_name, ds_path)
 
     # Extract the cookie from the SOAP stub — this includes proper quoting
@@ -165,20 +169,12 @@ def create_memboot_vm(
     devices: list = []
     next_key = -100  # use negative keys for new devices
 
-    # SATA controller
-    sata = vim.vm.device.VirtualAHCIController()
-    sata.key           = next_key; next_key -= 1
-    sata.busNumber     = 0
-    sata_spec          = vim.vm.device.VirtualDeviceSpec()
-    sata_spec.operation = vim.vm.device.VirtualDeviceSpec.Operation.add
-    sata_spec.device   = sata
-    devices.append(sata_spec)
-    sata_key = sata.key
-
-    # CDROM on SATA
+    # CDROM on IDE.
+    # Using IDE avoids VirtualAHCI controller compatibility issues observed on
+    # some clusters (e.g. "Invalid configuration for device '1'").
     cdrom = vim.vm.device.VirtualCdrom()
     cdrom.key            = next_key; next_key -= 1
-    cdrom.controllerKey  = sata_key
+    cdrom.controllerKey  = 200
     cdrom.unitNumber     = 0
     iso_backing          = vim.vm.device.VirtualCdrom.IsoBackingInfo()
     iso_backing.fileName = iso_ds_path

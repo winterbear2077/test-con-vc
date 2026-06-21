@@ -23,12 +23,33 @@ from nettest.ovf_deploy import (
 )
 
 
+def _datastore_accessible_on_host(host_obj: Any, datastore_name: str) -> bool:
+    for ds in getattr(host_obj, "datastore", []) or []:
+        if str(getattr(ds, "name", "")) != datastore_name:
+            continue
+        summary = getattr(ds, "summary", None)
+        return bool(getattr(summary, "accessible", False))
+    return False
+
+
+def _datastore_name_from_ds_path(ds_path: str) -> str:
+    text = str(ds_path or "").strip()
+    if not text.startswith("["):
+        return ""
+    end = text.find("]")
+    if end <= 1:
+        return ""
+    return text[1:end].strip()
+
+
 @dataclass
 class VMInstance:
     """Represents a provisioned test VM."""
     datacenter: str
     cluster: str
+    host_name: str
     vm_name: str
+    vm_index: int
     moid: str  # Managed Object ID
     subnet: str
     vlan: int
@@ -40,6 +61,8 @@ class VMInstance:
 
     vmtools_ready: bool = field(default=False)  # True when VMware Tools reported guestToolsRunning
     probe_results: Dict[str, str] = field(default_factory=dict)  # {target_ip: "PASS"|"FAIL"} from guestinfo
+    serial_port: int = field(default=0)
+    vsock_cid: int = field(default=-1)
 
 
 def _wait_for_vmtools(vm_obj: Any, timeout_sec: int = 300) -> bool:
@@ -364,7 +387,9 @@ def provision_test_vms(
                     VMInstance(
                         datacenter=row.datacenter,
                         cluster=row.cluster,
+                        host_name="",
                         vm_name=vm_name,
+                        vm_index=vm_idx,
                         moid="dry-run-moid",
                         subnet=row.subnet,
                         vlan=int(row.vlan),
@@ -373,6 +398,8 @@ def provision_test_vms(
                         dpg_name="dry-run-dpg",
                         selection_policy="dry-run",
                         base_iso_path="",
+                        serial_port=0,
+                        vsock_cid=-1,
                     )
                 )
         return instances
@@ -551,6 +578,24 @@ def provision_test_vms(
             )
             if not avail_hosts:
                 raise RuntimeError(f"No connected hosts in cluster {cl_name}")
+
+            if boot_method == "memboot":
+                iso_ds_path = str(iso_map.get((dc_name, cl_name), "") or "")
+                iso_ds_name = _datastore_name_from_ds_path(iso_ds_path)
+                if not iso_ds_name:
+                    raise RuntimeError(
+                        f"Invalid ISO datastore path for {dc_name}/{cl_name}: {iso_ds_path!r}"
+                    )
+                hosts_with_iso_access = [
+                    h for h in avail_hosts if _datastore_accessible_on_host(h, iso_ds_name)
+                ]
+                if not hosts_with_iso_access:
+                    host_names = [str(getattr(h, "name", "")) for h in avail_hosts]
+                    raise RuntimeError(
+                        "Memboot ISO datastore is not accessible from any selected host "
+                        f"in {dc_name}/{cl_name}. ISO datastore={iso_ds_name!r}, hosts={host_names}"
+                    )
+                avail_hosts = hosts_with_iso_access
 
             net_obj = ipaddress.ip_network(
                 subnet if "/" in subnet else f"{subnet}/24", strict=False
@@ -863,11 +908,15 @@ def provision_test_vms(
             for vm_idx, vm_obj in enumerate(subnet_vm_objs):
                 alloc_ip = alloc_ips[vm_idx]
                 vm_name  = f"{args.vm_prefix}-{run_id}-net-{net_idx:04d}-{vm_idx}"
+                serial_port = serial_ports[vm_idx] if poll_method == "serial" and vm_idx < len(serial_ports) else 0
+                vsock_cid = vsock_cids[vm_idx] if poll_method == "vsock" and vm_idx < len(vsock_cids) else -1
                 instances.append(
                     VMInstance(
                         datacenter=dc_name,
                         cluster=cl_name,
+                        host_name=str(getattr(host_obj_for_vm, "name", "")),
                         vm_name=vm_name,
+                        vm_index=vm_idx,
                         moid=str(getattr(vm_obj, "_moId", "")),
                         subnet=subnet,
                         vlan=int(vlan_id),
@@ -878,6 +927,8 @@ def provision_test_vms(
                         base_iso_path="",
                         vmtools_ready=subnet_tools_ok[vm_idx],
                         probe_results=subnet_probe_results[vm_idx],
+                        serial_port=serial_port,
+                        vsock_cid=vsock_cid,
                     )
                 )
                 logger.info("Created %s (moid=%s, ip=%s) on VLAN %s vm_idx=%s",
@@ -892,7 +943,9 @@ def provision_test_vms(
                 VMInstance(
                     datacenter="",
                     cluster="",
+                    host_name="",
                     vm_name=str(seed_obj.name),
+                    vm_index=0,
                     moid=str(getattr(seed_obj, "_moId", "")),
                     subnet="",
                     vlan=0,
@@ -903,12 +956,164 @@ def provision_test_vms(
                     base_iso_path="",
                     vmtools_ready=False,
                     probe_results={},
+                    serial_port=0,
+                    vsock_cid=-1,
                 )
             )
             if on_vm_created:
                 on_vm_created(instances[-1].moid)
 
     return instances
+
+
+def reprobe_vm_instances(
+    *,
+    instances: List[VMInstance],
+    cases: List[Any],
+    gateway_by_subnet: Dict[str, str],
+    args: Any,
+    poll_method: str,
+) -> None:
+    """Re-send probe commands to already-created VMs and refresh probe_results.
+
+    This is used by retry rounds so serial/vsock retries collect fresh data
+    instead of reusing the first-attempt cached results.
+    """
+    if poll_method not in ("serial", "vsock"):
+        return
+
+    active_vms = [vm for vm in instances if vm.subnet and vm.dpg_name != "__seed__"]
+    if not active_vms or not cases:
+        return
+
+    from collections import defaultdict
+
+    subnet_vms: Dict[str, List[VMInstance]] = defaultdict(list)
+    for vm in active_vms:
+        subnet_vms[vm.subnet].append(vm)
+    for subnet in subnet_vms:
+        subnet_vms[subnet].sort(key=lambda vm: vm.vm_name)
+
+    vm_by_key: Dict[tuple[str, int], VMInstance] = {}
+    for subnet, vms in subnet_vms.items():
+        for idx, vm in enumerate(vms):
+            vm_by_key[(subnet, idx)] = vm
+
+    targets_by_src: Dict[tuple[str, int], List[str]] = defaultdict(list)
+    seen_by_src: Dict[tuple[str, int], Set[str]] = defaultdict(set)
+    has_intra_by_subnet: Dict[str, bool] = defaultdict(bool)
+
+    for case in cases:
+        src_subnet = str(getattr(case, "src_subnet", ""))
+        dst_subnet = str(getattr(case, "dst_subnet", ""))
+        src_idx = int(getattr(case, "src_vm_index", 0))
+        dst_idx = int(getattr(case, "dst_vm_index", 0))
+        src_key = (src_subnet, src_idx)
+
+        if src_subnet == dst_subnet:
+            has_intra_by_subnet[src_subnet] = True
+            dst_vm = vm_by_key.get((dst_subnet, dst_idx))
+            probe_ip = str(getattr(dst_vm, "ip_address", "") or "")
+        else:
+            probe_ip = str(gateway_by_subnet.get(dst_subnet, "") or "")
+
+        if not probe_ip:
+            continue
+        if probe_ip in seen_by_src[src_key]:
+            continue
+        seen_by_src[src_key].add(probe_ip)
+        targets_by_src[src_key].append(probe_ip)
+
+    if poll_method == "serial":
+        serial_server = getattr(args, "_serial_server", None)
+        if serial_server is None:
+            logger.warning("Retry reprobe skipped: args._serial_server not initialized")
+            return
+        for subnet, vms in subnet_vms.items():
+            gw = str(gateway_by_subnet.get(subnet, "") or "")
+            if not gw:
+                continue
+            try:
+                prefix = ipaddress.ip_network(
+                    subnet if "/" in subnet else f"{subnet}/24", strict=False
+                ).prefixlen
+            except ValueError:
+                prefix = 24
+
+            cfgs: List[Dict[str, Any]] = []
+            vm_order: List[VMInstance] = []
+            for idx, vm in enumerate(vms):
+                if vm.serial_port <= 0:
+                    continue
+                cfgs.append(
+                    {
+                        "port": vm.serial_port,
+                        "vm_name": vm.vm_name,
+                        "ip": vm.ip_address,
+                        "prefix": prefix,
+                        "gw": gw,
+                        "targets": list(targets_by_src.get((subnet, idx), [])),
+                    }
+                )
+                vm_order.append(vm)
+
+            if not cfgs:
+                continue
+
+            res = serial_server.run_subnet_probe(
+                cfgs,
+                sync=bool(has_intra_by_subnet.get(subnet, False)),
+                connect_timeout=300,
+                io_timeout=180,
+            )
+            for idx, vm in enumerate(vm_order):
+                vm.probe_results = dict(res[idx].get("results", {}) or {})
+                if res[idx].get("error"):
+                    logger.warning("Retry serial reprobe error on %s: %s", vm.vm_name, res[idx]["error"])
+
+    elif poll_method == "vsock":
+        vsock_server = getattr(args, "_vsock_server", None)
+        if vsock_server is None:
+            logger.warning("Retry reprobe skipped: args._vsock_server not initialized")
+            return
+        for subnet, vms in subnet_vms.items():
+            gw = str(gateway_by_subnet.get(subnet, "") or "")
+            if not gw:
+                continue
+            try:
+                prefix = ipaddress.ip_network(
+                    subnet if "/" in subnet else f"{subnet}/24", strict=False
+                ).prefixlen
+            except ValueError:
+                prefix = 24
+
+            cfgs: List[Dict[str, Any]] = []
+            vm_order: List[VMInstance] = []
+            for idx, vm in enumerate(vms):
+                if vm.vsock_cid <= 0:
+                    continue
+                cfgs.append(
+                    {
+                        "cid": vm.vsock_cid,
+                        "ip": vm.ip_address,
+                        "prefix": prefix,
+                        "gw": gw,
+                        "targets": list(targets_by_src.get((subnet, idx), [])),
+                    }
+                )
+                vm_order.append(vm)
+
+            if not cfgs:
+                continue
+
+            res = vsock_server.run_subnet_probe(
+                cfgs,
+                sync=bool(has_intra_by_subnet.get(subnet, False)),
+            )
+            for idx, vm in enumerate(vm_order):
+                vm.probe_results = dict(res[idx].get("results", {}) or {})
+                if res[idx].get("error"):
+                    logger.warning("Retry vsock reprobe error on %s: %s", vm.vm_name, res[idx]["error"])
 
 
 def cleanup_vms(

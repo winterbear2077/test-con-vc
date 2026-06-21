@@ -15,7 +15,7 @@ from nettest.input_handlers import load_input, validate_and_normalize
 from nettest.models import TestCase, TestResult
 from nettest.placement import plan_cluster_placements, plan_vlan_bindings, validate_vcenter_requirements
 from nettest.probe import run_icmp_checks
-from nettest.provisioning import provision_test_vms, cleanup_vms
+from nettest.provisioning import provision_test_vms, cleanup_vms, reprobe_vm_instances
 from nettest.policy import (
     ALL_PHASE_IDS,
     assign_case_ids,
@@ -467,6 +467,22 @@ def _run_classic_testing(
         if not current_cases:
             break
         check_cancel(f"before attempt {attempt}")
+
+        if (
+            attempt > 0
+            and cfg.execute_vcenter
+            and cfg.probe_mode in ("in-guest", "in-guest-ping")
+            and cfg.poll_method in ("serial", "vsock")
+        ):
+            logger.info("Retry attempt %s: re-running %s probe collection on existing VMs", attempt, cfg.poll_method)
+            reprobe_vm_instances(
+                instances=vm_instances,
+                cases=current_cases,
+                gateway_by_subnet=gateway_by_subnet,
+                args=cfg,
+                poll_method=cfg.poll_method,
+            )
+
         attempt_results = run_icmp_checks(
             current_cases,
             execute_vcenter=cfg.execute_vcenter,
@@ -574,7 +590,9 @@ def _build_result_payload(
             },
             "created_vms": [
                 {
+                    "host_name": vm.host_name,
                     "vm_name": vm.vm_name,
+                    "vm_index": vm.vm_index,
                     "moid": vm.moid,
                     "datacenter": vm.datacenter,
                     "cluster": vm.cluster,
@@ -871,7 +889,7 @@ def execute_run(
         return 3
     except RuntimeError as exc:
         err = {"error": str(exc), "type": "RuntimeError"}
-        logger.error("Preflight failed: %s", exc)
+        logger.error("Run failed: %s", exc)
         if error_cb: error_cb(err)
         _teardown_log_cb(_log_handler)
         return 2

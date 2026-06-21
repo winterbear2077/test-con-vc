@@ -27,64 +27,73 @@ pub fn run_probe_protocol(
     reader: &mut dyn BufRead,
     writer: &mut dyn Write,
 ) -> io::Result<()> {
-    let mut line1 = String::new();
-    reader.read_line(&mut line1)?;
-    let line1 = line1.trim();
-    log(logf, &format!("  RX: {}", line1));
-
-    let msg1: Value = serde_json::from_str(line1)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
-
-    let ip     = msg1["ip"].as_str().unwrap_or("").to_string();
-    let prefix = msg1["prefix"].as_u64().unwrap_or(24) as u8;
-    let gw     = msg1["gw"].as_str().unwrap_or("").to_string();
-
-    if ip.is_empty() || gw.is_empty() {
-        writeln!(writer, "{}", json!({"status":"error","reason":"bad-config"}))?;
-        writer.flush()?;
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "missing ip/gw"));
-    }
-
-    configure_network(logf, &ip, prefix, &gw)?;
-
-    let targets: Vec<String> = match msg1["targets"].as_array() {
-        Some(arr) => arr.iter().filter_map(|v| v.as_str().map(String::from)).collect(),
-        None => {
-            // Two-phase: no targets in first message — send ready and wait
-            log(logf, "  Two-phase: sending ready");
-            writeln!(writer, "{}", json!({"status":"ready"}))?;
-            writer.flush()?;
-
-            let mut line2 = String::new();
-            reader.read_line(&mut line2)?;
-            let line2 = line2.trim();
-            log(logf, &format!("  RX phase-2: {}", line2));
-
-            let msg2: Value = serde_json::from_str(line2)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
-            msg2["targets"].as_array()
-                .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
-                .unwrap_or_default()
+    loop {
+        let mut line1 = String::new();
+        if reader.read_line(&mut line1)? == 0 {
+            return Ok(());
         }
-    };
+        let line1 = line1.trim();
+        if line1.is_empty() {
+            continue;
+        }
+        log(logf, &format!("  RX: {}", line1));
 
-    // Probe type and optional TCP ports
-    let probe_type = msg1["probe_type"].as_str().unwrap_or("icmp").to_string();
-    let tcp_ports: Vec<u16> = msg1["tcp_ports"]
-        .as_array()
-        .map(|a| a.iter().filter_map(|v| v.as_u64().map(|n| n as u16)).collect())
-        .unwrap_or_default();
+        let msg1: Value = serde_json::from_str(line1)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
 
-    let results = if probe_type == "tcp" {
-        run_tcp_connects(logf, &targets, &tcp_ports)
-    } else {
-        run_pings(logf, &targets)
-    };
-    let reply = json!({"status":"done","results": results}).to_string();
-    log(logf, &format!("  TX: {}", reply));
-    writeln!(writer, "{}", reply)?;
-    writer.flush()?;
-    Ok(())
+        let ip     = msg1["ip"].as_str().unwrap_or("").to_string();
+        let prefix = msg1["prefix"].as_u64().unwrap_or(24) as u8;
+        let gw     = msg1["gw"].as_str().unwrap_or("").to_string();
+
+        if ip.is_empty() || gw.is_empty() {
+            writeln!(writer, "{}", json!({"status":"error","reason":"bad-config"}))?;
+            writer.flush()?;
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "missing ip/gw"));
+        }
+
+        configure_network(logf, &ip, prefix, &gw)?;
+
+        let targets: Vec<String> = match msg1["targets"].as_array() {
+            Some(arr) => arr.iter().filter_map(|v| v.as_str().map(String::from)).collect(),
+            None => {
+                // Two-phase: no targets in first message — send ready and wait
+                log(logf, "  Two-phase: sending ready");
+                writeln!(writer, "{}", json!({"status":"ready"}))?;
+                writer.flush()?;
+
+                let mut line2 = String::new();
+                if reader.read_line(&mut line2)? == 0 {
+                    return Ok(());
+                }
+                let line2 = line2.trim();
+                log(logf, &format!("  RX phase-2: {}", line2));
+
+                let msg2: Value = serde_json::from_str(line2)
+                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+                msg2["targets"].as_array()
+                    .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                    .unwrap_or_default()
+            }
+        };
+
+        // Probe type and optional TCP ports
+        let probe_type = msg1["probe_type"].as_str().unwrap_or("icmp").to_string();
+        let tcp_ports: Vec<u16> = msg1["tcp_ports"]
+            .as_array()
+            .map(|a| a.iter().filter_map(|v| v.as_u64().map(|n| n as u16)).collect())
+            .unwrap_or_default();
+
+        let results = if probe_type == "tcp" {
+            run_tcp_connects(logf, &targets, &tcp_ports)
+        } else {
+            run_pings(logf, &targets)
+        };
+        let reply = json!({"status":"done","results": results}).to_string();
+        log(logf, &format!("  TX: {}", reply));
+        writeln!(writer, "{}", reply)?;
+        writer.flush()?;
+
+    }
 }
 
 // ── guestinfo / vmtoolsd channel ──────────────────────────────────────────────

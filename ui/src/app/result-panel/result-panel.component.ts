@@ -1,6 +1,7 @@
 import { Component, ElementRef, Input, OnChanges, SimpleChanges, ViewChild } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { ClarityModule } from '@clr/angular';
+import { ClrTooltipModule } from '@clr/angular/popover/tooltip';
 import html2canvas from 'html2canvas';
 
 const PHASE_NAMES: Record<string, string> = {
@@ -44,7 +45,7 @@ function phaseMeta(phaseId: string): { label: string; color: string } {
 @Component({
   selector: 'app-result-panel',
   standalone: true,
-  imports: [CommonModule, ClarityModule],
+  imports: [CommonModule, ClarityModule, ClrTooltipModule],
   templateUrl: './result-panel.component.html',
   styleUrl: './result-panel.component.scss'
 })
@@ -54,6 +55,7 @@ export class ResultPanelComponent implements OnChanges {
   processed: any = null;
   exporting = false;
   exportMsg = '';
+  private vmByKey = new Map<string, any>();
 
   private readonly EXPORT_MAX_PIXELS = 16_000_000;
   private readonly EXPORT_MIN_SCALE = 1;
@@ -68,6 +70,12 @@ export class ResultPanelComponent implements OnChanges {
   processResult(result: any): any {
     if (!result) return null;
     const details: any[] = Array.isArray(result.Results) ? result.Results : (result.Results?.details || []);
+    const createdVms: any[] = Array.isArray(result.Execution?.created_vms) ? result.Execution.created_vms : [];
+    this.vmByKey = new Map(
+      createdVms
+        .filter((vm: any) => vm && vm.subnet)
+        .map((vm: any) => [`${vm.subnet}|${Number(vm.vm_index ?? 0)}`, vm])
+    );
     const subnetVrf: Record<string, string> = {};
     const subnetVlan: Record<string, string> = {};
     [...(result.ParsedInput?.vm_provisioned || []), ...(result.ParsedInput?.mngt_esxi_skipped || [])].forEach((r: any) => {
@@ -116,6 +124,39 @@ export class ResultPanelComponent implements OnChanges {
 
   cellsFor(matrix: any, src: string, dst: string): any[] {
     return matrix.pds.filter((d: any) => d.src_subnet === src && d.dst_subnet === dst);
+  }
+
+  cellTitle(cell: any): string {
+    const key = `${cell.src_subnet}|${Number(cell.src_vm_index ?? 0)}`;
+    const vm = this.vmByKey.get(key);
+    const host = vm?.host_name || 'unknown';
+    const ip = vm?.ip_address || 'unknown';
+    const vmLabel = vm?.vm_name || `vm-${Number(cell.src_vm_index ?? 0)}`;
+    return [
+      `src subnet: ${cell.src_subnet}`,
+      `src vm: ${vmLabel}`,
+      `src host: ${host}`,
+      `src ip: ${ip}`,
+      `dst subnet: ${cell.dst_subnet}`,
+      `expected: ${cell.expected}`,
+      `actual: ${cell.actual}`,
+      cell.reason ? `reason: ${cell.reason}` : '',
+    ].filter(Boolean).join('\n');
+  }
+
+  cellTooltipLines(cell: any): Array<{ label: string; value: string }> {
+    const key = `${cell.src_subnet}|${Number(cell.src_vm_index ?? 0)}`;
+    const vm = this.vmByKey.get(key);
+    return [
+      { label: 'src subnet', value: String(cell.src_subnet || '') },
+      { label: 'src vm', value: String(vm?.vm_name || `vm-${Number(cell.src_vm_index ?? 0)}`) },
+      { label: 'src host', value: String(vm?.host_name || 'unknown') },
+      { label: 'src ip', value: String(vm?.ip_address || 'unknown') },
+      { label: 'dst subnet', value: String(cell.dst_subnet || '') },
+      { label: 'expected', value: String(cell.expected || '') },
+      { label: 'actual', value: String(cell.actual || '') },
+      { label: 'reason', value: String(cell.reason || '') },
+    ].filter((item) => item.value !== '');
   }
 
   cellClass(d: any): string {

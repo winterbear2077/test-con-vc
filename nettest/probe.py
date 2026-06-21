@@ -14,7 +14,7 @@ def _status_from_expectation(expected: str, actual: str) -> str:
     exp = str(expected or "").strip().upper()
     act = str(actual or "").strip().upper()
     if exp == "OBSERVE":
-        return "pass" if act in ("PASS", "FAIL") else "fail"
+        return "pass" if act == "PASS" else "fail"
     return "pass" if act == exp else "fail"
 
 

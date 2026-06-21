@@ -60,12 +60,21 @@
                 </td>
                 <td *ngFor="let dst of matrix.dstSubnets" [class]="src===dst ? 'c-self' : ''">
                   <ng-container *ngIf="src!==dst">
-                    <span *ngFor="let cell of cellsFor(matrix, src, dst)"
-                          [class]="cellClass(cell)"
-                        [title]="'src:'+cell.src_subnet+' dest:'+cell.dst_subnet+' expected:'+cell.expected+' actual:'+cell.actual+' reason:'+cell.reason"
-                          style="display:inline-block;border-radius:3px;padding:1px 4px;font-size:.85em">
-                      {{ cellIcon(cell) }}<br><span style="font-size:.65em">{{ cell.actual }}</span>
-                    </span>
+                    <clr-tooltip *ngFor="let cell of cellsFor(matrix, src, dst)" style="display:inline-block">
+                      <span clrTooltipTrigger
+                            [class]="cellClass(cell)"
+                            style="display:inline-block;border-radius:3px;padding:1px 4px;font-size:.85em">
+                        {{ cellIcon(cell) }}<br><span style="font-size:.65em">{{ cell.actual }}</span>
+                      </span>
+                      <clr-tooltip-content clrPosition="top-right" clrSize="sm">
+                        <div class="cell-tooltip">
+                          <div *ngFor="let line of cellTooltipLines(cell)">
+                            <span class="cell-tooltip-label">{{ line.label }}:</span>
+                            <span class="cell-tooltip-value">{{ line.value }}</span>
+                          </div>
+                        </div>
+                      </clr-tooltip-content>
+                    </clr-tooltip>
                   </ng-container>
                   <ng-container *ngIf="src===dst">&#x2014;</ng-container>
                 </td>
