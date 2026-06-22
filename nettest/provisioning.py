@@ -11,7 +11,7 @@ import random
 import time
 import ipaddress
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Set
 
 logger = logging.getLogger(__name__)
 
@@ -975,6 +975,7 @@ def reprobe_vm_instances(
     poll_method: str,
     connect_timeout: int = 60,
     io_timeout: int = 90,
+    check_cancel: Optional[Callable[[str], None]] = None,
 ) -> None:
     """Re-send probe commands to already-created VMs and refresh probe_results.
 
@@ -987,6 +988,9 @@ def reprobe_vm_instances(
     """
     if poll_method not in ("serial", "vsock"):
         return
+
+    if check_cancel:
+        check_cancel("before retry reprobe")
 
     active_vms = [vm for vm in instances if vm.subnet and vm.dpg_name != "__seed__"]
     if not active_vms or not cases:
@@ -1036,6 +1040,8 @@ def reprobe_vm_instances(
             logger.warning("Retry reprobe skipped: args._serial_server not initialized")
             return
         for subnet, vms in subnet_vms.items():
+            if check_cancel:
+                check_cancel(f"retry serial reprobe subnet={subnet}")
             gw = str(gateway_by_subnet.get(subnet, "") or "")
             if not gw:
                 continue
@@ -1069,8 +1075,8 @@ def reprobe_vm_instances(
             res = serial_server.run_subnet_probe(
                 cfgs,
                 sync=bool(has_intra_by_subnet.get(subnet, False)),
-                connect_timeout=60,
-                io_timeout=90,
+                connect_timeout=connect_timeout,
+                io_timeout=io_timeout,
             )
             for idx, vm in enumerate(vm_order):
                 vm.probe_results = dict(res[idx].get("results", {}) or {})
@@ -1083,6 +1089,8 @@ def reprobe_vm_instances(
             logger.warning("Retry reprobe skipped: args._vsock_server not initialized")
             return
         for subnet, vms in subnet_vms.items():
+            if check_cancel:
+                check_cancel(f"retry vsock reprobe subnet={subnet}")
             gw = str(gateway_by_subnet.get(subnet, "") or "")
             if not gw:
                 continue

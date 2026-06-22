@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import subprocess
 import time
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -215,6 +215,7 @@ def run_icmp_checks(
     guest_ssh_password: str = "",
     vcenter_si: Any = None,
     poll_method: str = "guestinfo",
+    check_cancel: Optional[Callable[[str], None]] = None,
 ) -> List[TestResult]:
     """Execute ICMP connectivity checks using the specified probe mode.
 
@@ -256,7 +257,9 @@ def run_icmp_checks(
         # Ping (or TCP connect) from local controller to target gateways
         probe_cache: Dict[str, bool] = {}
         results: List[TestResult] = []
-        for case in cases:
+        for idx, case in enumerate(cases):
+            if check_cancel:
+                check_cancel(f"probe controller-gateway case={idx}")
             dst_gw = gateway_by_subnet.get(case.dst_subnet, "")
             if not dst_gw:
                 actual = "UNKNOWN"
@@ -355,7 +358,9 @@ def run_icmp_checks(
         use_guest_ops = vcenter_si is not None
 
         results = []
-        for case in cases:
+        for idx, case in enumerate(cases):
+            if check_cancel:
+                check_cancel(f"probe in-guest case={idx}")
             src_vm_idx  = getattr(case, "src_vm_index", 0)
             dst_vm_idx  = getattr(case, "dst_vm_index", 0)
             case_phase  = getattr(case, "phase", "intra-vrf")

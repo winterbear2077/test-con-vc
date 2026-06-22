@@ -14,11 +14,17 @@ import { ApiService, RunTestcase, TestSuite, TestSuiteCaseRule } from '../api.se
 export class TestsuiteComponent implements OnInit {
   suites: TestSuite[] = [];
   testcases: RunTestcase[] = [];
+  filteredTestcases: RunTestcase[] = [];
+  phaseOptions: string[] = [];
 
   editingName = '';
   selectedCaseIds = new Set<string>();
   caseActions: Record<string, 'ALLOW' | 'DENY'> = {};
   saveMsg = '';
+  filterText = '';
+  filterPhase = 'all';
+  filterAction = 'all';
+  onlySelected = false;
 
   constructor(private api: ApiService) {}
 
@@ -30,9 +36,13 @@ export class TestsuiteComponent implements OnInit {
     this.api.getRunCatalog().subscribe({
       next: (catalog) => {
         this.testcases = catalog.testcases || [];
+        this.phaseOptions = [...new Set(this.testcases.map(tc => String(tc.suite || '').trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+        this.applyFilters();
       },
       error: () => {
         this.testcases = [];
+        this.filteredTestcases = [];
+        this.phaseOptions = [];
       },
     });
 
@@ -51,6 +61,7 @@ export class TestsuiteComponent implements OnInit {
     this.selectedCaseIds.clear();
     this.caseActions = {};
     this.saveMsg = '';
+    this.applyFilters();
   }
 
   editSuite(s: TestSuite) {
@@ -69,6 +80,31 @@ export class TestsuiteComponent implements OnInit {
       keys.forEach(k => this.caseActions[k] = 'ALLOW');
     }
     this.saveMsg = '';
+    this.applyFilters();
+  }
+
+  applyFilters() {
+    const text = (this.filterText || '').trim().toLowerCase();
+    this.filteredTestcases = this.testcases.filter((tc) => {
+      if (this.onlySelected && !this.selectedCaseIds.has(tc.id)) return false;
+      if (this.filterPhase !== 'all' && String(tc.suite || '') !== this.filterPhase) return false;
+      if (this.filterAction !== 'all') {
+        const expected = String(tc.expected || '').toUpperCase();
+        if (this.filterAction === 'ALLOW' && expected === 'FAIL') return false;
+        if (this.filterAction === 'DENY' && expected !== 'FAIL') return false;
+      }
+      if (!text) return true;
+      const hay = [
+        tc.id,
+        tc.label,
+        tc.src_subnet,
+        tc.dst_subnet,
+        tc.expected,
+        tc.reason,
+        tc.suite,
+      ].map((v) => String(v || '').toLowerCase()).join(' ');
+      return hay.includes(text);
+    });
   }
 
   isCaseSelected(caseId: string): boolean {
@@ -83,6 +119,7 @@ export class TestsuiteComponent implements OnInit {
       this.selectedCaseIds.delete(caseId);
       delete this.caseActions[caseId];
     }
+    if (this.onlySelected) this.applyFilters();
   }
 
   actionFor(caseId: string): 'ALLOW' | 'DENY' {
@@ -95,15 +132,25 @@ export class TestsuiteComponent implements OnInit {
   }
 
   selectAllCases() {
-    this.testcases.forEach(tc => {
+    this.filteredTestcases.forEach(tc => {
       this.selectedCaseIds.add(tc.id);
       if (!this.caseActions[tc.id]) this.caseActions[tc.id] = 'ALLOW';
     });
+    if (this.onlySelected) this.applyFilters();
+  }
+
+  clearFilteredCases() {
+    this.filteredTestcases.forEach(tc => {
+      this.selectedCaseIds.delete(tc.id);
+      delete this.caseActions[tc.id];
+    });
+    if (this.onlySelected) this.applyFilters();
   }
 
   clearCases() {
     this.selectedCaseIds.clear();
     this.caseActions = {};
+    if (this.onlySelected) this.applyFilters();
   }
 
   saveSuite() {

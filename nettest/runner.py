@@ -366,6 +366,7 @@ def _run_phased_testing(
             guest_ssh_password=effective_guest_ssh_password,
             vcenter_si=vcenter_si,
             poll_method=cfg.poll_method,
+            check_cancel=check_cancel,
         )
         all_results = merge_retry_results(all_results, phase_results)
 
@@ -481,6 +482,7 @@ def _run_classic_testing(
                 gateway_by_subnet=gateway_by_subnet,
                 args=cfg,
                 poll_method=cfg.poll_method,
+                check_cancel=check_cancel,
             )
 
         attempt_results = run_icmp_checks(
@@ -494,6 +496,7 @@ def _run_classic_testing(
             guest_ssh_password=effective_guest_ssh_password,
             vcenter_si=vcenter_si,
             poll_method=cfg.poll_method,
+            check_cancel=check_cancel,
         )
         all_results = merge_retry_results(all_results, attempt_results)
         failed = [r for r in all_results if r.status != "pass"]

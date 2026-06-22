@@ -22,3 +22,24 @@
 .testcase-item {
   padding: 2px 0;
 }
+
+.testcase-filters {
+  display: grid;
+  grid-template-columns: 1.4fr auto auto auto;
+  gap: 8px;
+  align-items: flex-end;
+  margin: 8px 0;
+
+  input.clr-input,
+  select.clr-select,
+  clr-select,
+  label.clr-checkbox-wrapper {
+    margin-bottom: 0;
+  }
+}
+
+@media (max-width: 980px) {
+  .testcase-filters {
+    grid-template-columns: 1fr;
+  }
+}
