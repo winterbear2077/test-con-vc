@@ -274,6 +274,11 @@ def api_start_run(req: RunIn, request: Request, x_vcenter_session: str = Header(
 
 @router.get("/api/run/catalog")
 def api_run_catalog():
+    def _clustered_endpoint(subnet: str, cluster: str) -> str:
+        s = str(subnet or "").strip()
+        c = str(cluster or "").strip()
+        return f"{s}({c})" if c else s
+
     rows = _db.get_networks()
     accepted, rejected = validate_and_normalize(rows, "MNGT")
 
@@ -308,9 +313,15 @@ def api_run_catalog():
                 "suite": c.phase,
                 "src_subnet": c.src_subnet,
                 "dst_subnet": c.dst_subnet,
+                "src_cluster": str(getattr(c, "src_cluster", "") or ""),
+                "dst_cluster": str(getattr(c, "dst_cluster", "") or ""),
                 "expected": c.expected,
                 "reason": c.reason,
-                "label": f"{c.src_subnet} -> {c.dst_subnet} [{c.expected}] ({c.reason})",
+                "label": (
+                    f"{_clustered_endpoint(c.src_subnet, str(getattr(c, 'src_cluster', '') or ''))} -> "
+                    f"{_clustered_endpoint(c.dst_subnet, str(getattr(c, 'dst_cluster', '') or ''))} "
+                    f"[{c.expected}] ({c.reason})"
+                ),
             }
             for c in cases
         ],

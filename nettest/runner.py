@@ -548,6 +548,26 @@ def _build_result_payload(
     cleanup_result: Optional[Dict[str, Any]],
     created_registry: Dict[str, List[Any]],
 ) -> Dict[str, Any]:
+    planned_vms: List[Dict[str, Any]] = []
+    if not cfg.execute_vcenter:
+        selected_subnets = {c.src_subnet for c in cases} | {c.dst_subnet for c in cases}
+        vm_rows = [
+            r for r in accepted
+            if r.mode == "vm-provisioned" and r.subnet in selected_subnets
+        ]
+        for net_idx, row in enumerate(vm_rows, start=1):
+            for vm_idx in range(max(1, int(cfg.vms_per_subnet))):
+                planned_vms.append(
+                    {
+                        "vm_name": f"{cfg.vm_prefix}-{cfg.run_id}-net-{net_idx:04d}-{vm_idx}",
+                        "vm_index": vm_idx,
+                        "datacenter": row.datacenter,
+                        "cluster": row.cluster,
+                        "subnet": row.subnet,
+                        "vlan": row.vlan,
+                    }
+                )
+
     failed_results = [r for r in all_results if r.status != "pass"]
     success = len(failed_results) == 0
 
@@ -607,6 +627,12 @@ def _build_result_payload(
                 }
                 for vm in all_vm_instances
             ],
+            "planned_vms": planned_vms,
+            "planned_vm_summary": {
+                "count": len(planned_vms),
+                "subnets": len({v["subnet"] for v in planned_vms}),
+                "vms_per_subnet": max(1, int(cfg.vms_per_subnet)),
+            },
             "skipped_vm_provisioning_rows": [
                 {"subnet": r.subnet, "cluster": r.cluster, "reason": "cluster-is-mngt"}
                 for r in accepted
@@ -854,6 +880,27 @@ def execute_run(
             cleanup_result=cleanup_result,
             created_registry=created_registry,
         )
+        if not cfg.execute_vcenter:
+            plan = result_payload.get("Execution", {}).get("planned_vm_summary", {})
+            planned = result_payload.get("Execution", {}).get("planned_vms", [])
+            logger.info(
+                "Dry-run VM plan: total=%s subnets=%s vms_per_subnet=%s",
+                plan.get("count", 0),
+                plan.get("subnets", 0),
+                plan.get("vms_per_subnet", cfg.vms_per_subnet),
+            )
+            for item in planned[:200]:
+                logger.info(
+                    "Plan VM: name=%s dc=%s cluster=%s subnet=%s vlan=%s idx=%s",
+                    item.get("vm_name", ""),
+                    item.get("datacenter", ""),
+                    item.get("cluster", ""),
+                    item.get("subnet", ""),
+                    item.get("vlan", ""),
+                    item.get("vm_index", 0),
+                )
+            if len(planned) > 200:
+                logger.info("Plan VM: ... truncated, showing first 200 of %s", len(planned))
         failed_results = [r for r in all_results if r.status != "pass"]
         success = result_payload["FinalStatus"] == "PASS"
 

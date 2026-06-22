@@ -66,6 +66,8 @@ export interface RunTestcase {
   suite: string;
   src_subnet: string;
   dst_subnet: string;
+  src_cluster?: string;
+  dst_cluster?: string;
   expected: string;
   reason: string;
   label: string;

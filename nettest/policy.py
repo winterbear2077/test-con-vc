@@ -131,6 +131,8 @@ def generate_test_cases(
             expected="OBSERVE",
             reason=reason,
             phase="network-connectivity",
+            src_cluster=src.cluster,
+            dst_cluster=dst.cluster,
         ))
     assign_case_ids(testcases)
     return testcases
@@ -187,6 +189,8 @@ def generate_phased_cases(
                         phase="intra-subnet",
                         src_vm_index=i,
                         dst_vm_index=j,
+                        src_cluster=row.cluster,
+                        dst_cluster=row.cluster,
                     ))
         if intra_cases:
             phases.extend(_batch_phase(
@@ -206,6 +210,8 @@ def generate_phased_cases(
                 expected="PASS",
                 reason="same-vrf",
                 phase="intra-vrf",
+                src_cluster=src.cluster,
+                dst_cluster=dst.cluster,
             ))
         if intra_vrf_cases:
             phases.extend(_batch_phase(
@@ -227,6 +233,8 @@ def generate_phased_cases(
                     expected="PASS",
                     reason="cross-vrf-allowlist",
                     phase="cross-vrf-allowlist",
+                    src_cluster=src.cluster,
+                    dst_cluster=dst.cluster,
                 ))
         if cross_allow_cases:
             phases.extend(_batch_phase(
@@ -248,6 +256,8 @@ def generate_phased_cases(
                     expected="FAIL",
                     reason="cross-vrf-default-block",
                     phase="cross-vrf-block",
+                    src_cluster=src.cluster,
+                    dst_cluster=dst.cluster,
                 ))
         if cross_block_cases:
             phases.extend(_batch_phase(

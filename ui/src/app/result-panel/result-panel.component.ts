@@ -114,8 +114,9 @@ export class ResultPanelComponent implements OnChanges {
         phaseColor: meta.color,
       };
     });
+    const plannedVms = Array.isArray(result.Execution?.planned_vms) ? result.Execution.planned_vms : [];
     return {
-      ...result, details, subnetVrf, subnetVlan, matrices,
+      ...result, details, subnetVrf, subnetVlan, matrices, plannedVms,
       total: details.length,
       passed: details.filter((d: any) => d.status === 'pass').length,
       failed: details.filter((d: any) => d.status !== 'pass').length,

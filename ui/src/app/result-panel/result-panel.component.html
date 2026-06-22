@@ -60,13 +60,14 @@
                 </td>
                 <td *ngFor="let dst of matrix.dstSubnets" [class]="src===dst ? 'c-self' : ''">
                   <ng-container *ngIf="src!==dst">
-                    <clr-tooltip *ngFor="let cell of cellsFor(matrix, src, dst)" style="display:inline-block">
+                    <clr-tooltip *ngFor="let cell of cellsFor(matrix, src, dst)" class="cell-tooltip-host">
                       <span clrTooltipTrigger
-                            [class]="cellClass(cell)"
-                            style="display:inline-block;border-radius:3px;padding:1px 4px;font-size:.85em">
-                        {{ cellIcon(cell) }}<br><span style="font-size:.65em">{{ cell.actual }}</span>
+                            class="cell-badge"
+                            [class]="cellClass(cell)">
+                        <span class="cell-badge-icon">{{ cellIcon(cell) }}</span>
+                        <span class="cell-badge-actual">{{ cell.actual }}</span>
                       </span>
-                      <clr-tooltip-content clrPosition="top-right" clrSize="sm">
+                      <clr-tooltip-content clrPosition="top-right" class="cell-tooltip-content">
                         <div class="cell-tooltip">
                           <div *ngFor="let line of cellTooltipLines(cell)">
                             <span class="cell-tooltip-label">{{ line.label }}:</span>
@@ -78,6 +79,37 @@
                   </ng-container>
                   <ng-container *ngIf="src===dst">&#x2014;</ng-container>
                 </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div *ngIf="processed.plannedVms?.length" style="margin-top:1.5rem;margin-bottom:1rem">
+        <div class="p6" style="font-weight:600;margin-bottom:8px">
+          <clr-icon shape="info-circle" size="16" style="margin-right:4px"></clr-icon>
+          Planned VMs (Dry-run)
+        </div>
+        <div style="overflow-x:auto">
+          <table class="matrix-table" style="margin:0;font-size:.8rem">
+            <thead>
+              <tr>
+                <th>VM Name</th>
+                <th>Datacenter</th>
+                <th>Cluster</th>
+                <th>Subnet</th>
+                <th>VLAN</th>
+                <th>Index</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr *ngFor="let vm of processed.plannedVms">
+                <td style="font-family:monospace;font-size:.75rem">{{ vm.vm_name }}</td>
+                <td>{{ vm.datacenter }}</td>
+                <td>{{ vm.cluster }}</td>
+                <td style="font-family:monospace">{{ vm.subnet }}</td>
+                <td>{{ vm.vlan }}</td>
+                <td style="text-align:center">{{ vm.vm_index }}</td>
               </tr>
             </tbody>
           </table>

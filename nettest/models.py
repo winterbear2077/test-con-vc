@@ -51,6 +51,9 @@ class TestCase:
     tcp_ports: List[int] = field(default_factory=list)
     # Optional direct destination IP for custom point-to-point TCP tests.
     dst_ip: str = ""
+    # Optional source/destination cluster labels for UI display.
+    src_cluster: str = ""
+    dst_cluster: str = ""
     # Stable identifier used by UI/API case selection.
     case_id: str = ""
 

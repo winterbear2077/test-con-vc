@@ -99,6 +99,8 @@ export class TestsuiteComponent implements OnInit {
         tc.label,
         tc.src_subnet,
         tc.dst_subnet,
+        tc.src_cluster,
+        tc.dst_cluster,
         tc.expected,
         tc.reason,
         tc.suite,

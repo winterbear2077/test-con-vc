@@ -107,3 +107,21 @@
   align-self: center !important;
   margin-top: 0 !important;
 }
+
+/* Result matrix tooltip sizing: adaptive width with hard max, plus viewport-bounded height */
+clr-tooltip-content.cell-tooltip-content {
+  min-width: 320px;
+  max-width: min(80vw, 980px);
+  width: fit-content;
+}
+
+clr-tooltip-content.cell-tooltip-content .tooltip-content {
+  min-width: 320px;
+  max-width: min(80vw, 980px);
+  width: fit-content;
+  max-height: min(58vh, 520px);
+  overflow-y: auto;
+  overflow-x: hidden;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
