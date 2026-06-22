@@ -34,6 +34,8 @@ from urllib.parse import quote as _url_quote
 
 import requests
 import urllib3
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +46,13 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 def _ds_path_to_url(vcenter_host: str, datacenter_name: str, ds_path: str) -> str:
     """Convert a ``[DatastoreName] path/to/file.iso`` path to an HTTPS upload URL."""
+    host = str(vcenter_host or "").strip()
+    if host.startswith("https://"):
+        host = host[len("https://"):]
+    elif host.startswith("http://"):
+        host = host[len("http://"):]
+    host = host.strip().strip("/")
+
     # ds_path format: "[DatastoreName] dir/file.iso"
     bracket_end = ds_path.index("]")
     ds_name = ds_path[1:bracket_end].strip()
@@ -51,7 +60,7 @@ def _ds_path_to_url(vcenter_host: str, datacenter_name: str, ds_path: str) -> st
     encoded_ds   = _url_quote(ds_name,   safe="")
     encoded_path = _url_quote(file_path, safe="/")
     return (
-        f"https://{vcenter_host}/folder/{encoded_path}"
+        f"https://{host}/folder/{encoded_path}"
         f"?dcPath={_url_quote(datacenter_name, safe='')}"
         f"&dsName={encoded_ds}"
     )
@@ -95,20 +104,44 @@ def ensure_iso_on_datastore(
         iso_name, file_size // (1024 * 1024), ds_path,
     )
 
-    with open(local_iso_path, "rb") as fh:
-        sess = requests.Session()
-        req  = requests.Request(
-            "PUT", url, data=fh,
-            headers={
-                "Content-Type":   "application/octet-stream",
-                "Content-Length": str(file_size),
-                "Cookie":         soap_cookie,
-                "Overwrite":      "t",
-            },
-        )
-        prepped = sess.prepare_request(req)
-        prepped.headers.pop("Expect", None)
-        resp = sess.send(prepped, verify=False, timeout=(30, 600))
+    sess = requests.Session()
+    # Do not inherit HTTP(S)_PROXY from the environment for vCenter uploads.
+    # Proxy interception is a common cause of "Max retries exceeded" on /folder.
+    sess.trust_env = False
+    retry = Retry(
+        total=2,
+        connect=2,
+        read=0,
+        backoff_factor=0.5,
+        status_forcelist=(500, 502, 503, 504),
+        allowed_methods=frozenset(["PUT"]),
+        raise_on_status=False,
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    sess.mount("https://", adapter)
+
+    try:
+        with open(local_iso_path, "rb") as fh:
+            req  = requests.Request(
+                "PUT", url, data=fh,
+                headers={
+                    "Content-Type":   "application/octet-stream",
+                    "Content-Length": str(file_size),
+                    "Cookie":         soap_cookie,
+                    "Overwrite":      "t",
+                },
+            )
+            prepped = sess.prepare_request(req)
+            prepped.headers.pop("Expect", None)
+            resp = sess.send(prepped, verify=False, timeout=(30, 600))
+    except requests.exceptions.RequestException as exc:
+        raise RuntimeError(
+            "ISO upload connection failed for datastore /folder endpoint. "
+            f"url={url!r}, error={exc}. "
+            "Check vCenter host/port reachability, credentials cookie validity, and proxy env vars."
+        ) from exc
+    finally:
+        sess.close()
 
     if resp.status_code not in (200, 201):
         raise RuntimeError(

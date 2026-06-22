@@ -339,7 +339,12 @@ def merge_retry_results(
     """Merge two result lists; newer results win on key collision."""
     def _key(r: TestResult) -> Tuple:
         return (r.src_subnet, r.dst_subnet,
-                getattr(r, "src_vm_index", 0), getattr(r, "dst_vm_index", 0))
+                getattr(r, "src_vm_index", 0), getattr(r, "dst_vm_index", 0),
+                getattr(r, "phase", "intra-vrf"),
+                getattr(r, "probe_type", "icmp"),
+                getattr(r, "expected", ""),
+                getattr(r, "reason", ""),
+                getattr(r, "tcp_port", 0))
 
     index: Dict[Tuple, TestResult] = {_key(r): r for r in prior}
     for r in new_results:
@@ -357,10 +362,23 @@ def select_retry_cases(
 
     failed_keys = {
         (r.src_subnet, r.dst_subnet,
-         getattr(r, "src_vm_index", 0), getattr(r, "dst_vm_index", 0))
+         getattr(r, "src_vm_index", 0), getattr(r, "dst_vm_index", 0),
+         getattr(r, "phase", "intra-vrf"),
+         getattr(r, "probe_type", "icmp"),
+         getattr(r, "expected", ""),
+         getattr(r, "reason", ""))
         for r in latest_results if r.status != "pass"
     }
     return [
         c for c in all_cases
-        if (c.src_subnet, c.dst_subnet, c.src_vm_index, c.dst_vm_index) in failed_keys
+        if (
+            c.src_subnet,
+            c.dst_subnet,
+            c.src_vm_index,
+            c.dst_vm_index,
+            getattr(c, "phase", "intra-vrf"),
+            getattr(c, "probe_type", "icmp"),
+            getattr(c, "expected", ""),
+            getattr(c, "reason", ""),
+        ) in failed_keys
     ]

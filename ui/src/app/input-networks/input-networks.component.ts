@@ -156,9 +156,10 @@ export class InputNetworksComponent implements OnInit {
       _mngt: (existing.cluster || invRow.cluster || '').toUpperCase() === 'MNGT',
     };
 
-    // If inventory knows the VLAN and the row already has a portgroup, keep them aligned.
-    if (merged['pg'] && invRow['pg'] && merged['pg'] === invRow['pg'] && invRow['vlan']) {
-      merged['vlan'] = merged['vlan'] || invRow['vlan'];
+    // Keep VLAN authoritative from inventory when the selected portgroup matches.
+    // This avoids stale saved VLAN values after "Sync from vCenter".
+    if (merged['pg'] && invRow['pg'] && merged['pg'] === invRow['pg']) {
+      merged['vlan'] = invRow['vlan'] || '';
     }
 
     return merged;

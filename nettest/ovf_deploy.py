@@ -18,6 +18,8 @@ from typing import Any, Dict, List, Optional
 
 import requests
 import urllib3
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 logger = logging.getLogger(__name__)
 
@@ -67,23 +69,36 @@ def _upload_file(url: str, file_path: str, session_id: str = "") -> None:
         content_type = "application/octet-stream"
 
     file_size = os.path.getsize(file_path)
-    with open(file_path, "rb") as fh:
-        session = requests.Session()
-        req = requests.Request(
-            "PUT",
-            url,
-            data=fh,
-            headers={
-                "Content-Type": content_type,
-                "Content-Length": str(file_size),
-                # vSphere NFC pre-creates the VMDK stub during ImportVApp; this
-                # header instructs the NFC server to overwrite the existing file.
-                "Overwrite": "t",
-            },
-        )
-        prepped = session.prepare_request(req)
-        prepped.headers.pop("Expect", None)
-        resp = session.send(prepped, verify=False, timeout=(30, 1200))
+    session = requests.Session()
+    retry = Retry(
+        total=2,
+        connect=2,
+        backoff_factor=0.5,
+        status_forcelist=(500, 502, 503, 504),
+        raise_on_status=False,
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount("https://", adapter)
+
+    try:
+        with open(file_path, "rb") as fh:
+            req = requests.Request(
+                "PUT",
+                url,
+                data=fh,
+                headers={
+                    "Content-Type": content_type,
+                    "Content-Length": str(file_size),
+                    # vSphere NFC pre-creates the VMDK stub during ImportVApp; this
+                    # header instructs the NFC server to overwrite the existing file.
+                    "Overwrite": "t",
+                },
+            )
+            prepped = session.prepare_request(req)
+            prepped.headers.pop("Expect", None)
+            resp = session.send(prepped, verify=False, timeout=(30, 1200))
+    finally:
+        session.close()
 
     if resp.status_code not in (200, 201):
         body_preview = resp.text[:300] if resp.text else ""

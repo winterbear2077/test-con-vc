@@ -973,11 +973,17 @@ def reprobe_vm_instances(
     gateway_by_subnet: Dict[str, str],
     args: Any,
     poll_method: str,
+    connect_timeout: int = 60,
+    io_timeout: int = 90,
 ) -> None:
     """Re-send probe commands to already-created VMs and refresh probe_results.
 
     This is used by retry rounds so serial/vsock retries collect fresh data
     instead of reusing the first-attempt cached results.
+    
+    Args:
+        connect_timeout: Seconds to wait for VM connection (default 60s for retries).
+        io_timeout: Seconds for I/O operations (default 90s for retries).
     """
     if poll_method not in ("serial", "vsock"):
         return
@@ -1063,8 +1069,8 @@ def reprobe_vm_instances(
             res = serial_server.run_subnet_probe(
                 cfgs,
                 sync=bool(has_intra_by_subnet.get(subnet, False)),
-                connect_timeout=300,
-                io_timeout=180,
+                connect_timeout=60,
+                io_timeout=90,
             )
             for idx, vm in enumerate(vm_order):
                 vm.probe_results = dict(res[idx].get("results", {}) or {})
