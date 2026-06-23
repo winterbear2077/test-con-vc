@@ -116,6 +116,7 @@ def generate_test_cases(
     _ = allowlist
     _ = vrf_links
     vm_rows = [r for r in rows if r.mode == "vm-provisioned"]
+    vm_rows.sort(key=lambda r: (r.subnet, r.cluster, r.datacenter, r.vlan, r.gw, r.vrf))
     testcases: List[TestCase] = []
 
     for src, dst in combinations(vm_rows, 2):
@@ -171,6 +172,7 @@ def generate_phased_cases(
 
     pass_set, _ = _build_effective_sets(allowlist, vrf_links)
     vm_rows = [r for r in rows if r.mode == "vm-provisioned"]
+    vm_rows.sort(key=lambda r: (r.subnet, r.cluster, r.datacenter, r.vlan, r.gw, r.vrf))
     phases: List[TestPhase] = []
 
     # ── Phase 1: intra-subnet ─────────────────────────────────────────────────
@@ -349,6 +351,7 @@ def merge_retry_results(
     """Merge two result lists; newer results win on key collision."""
     def _key(r: TestResult) -> Tuple:
         return (r.src_subnet, r.dst_subnet,
+                getattr(r, "src_cluster", ""), getattr(r, "dst_cluster", ""),
                 getattr(r, "src_vm_index", 0), getattr(r, "dst_vm_index", 0),
                 getattr(r, "phase", "intra-vrf"),
                 getattr(r, "probe_type", "icmp"),

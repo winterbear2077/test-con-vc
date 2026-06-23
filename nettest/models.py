@@ -91,6 +91,9 @@ class TestResult:
     probe_type: str = "icmp"
     # TCP port probed (0 = ICMP or multi-port summary)
     tcp_port: int = 0
+    # Cluster labels carried from the originating TestCase.
+    src_cluster: str = ""
+    dst_cluster: str = ""
 
 
 @dataclass

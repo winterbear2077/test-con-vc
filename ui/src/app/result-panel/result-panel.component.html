@@ -45,24 +45,25 @@
               <tr>
                 <th style="text-align:left">src \ dst</th>
                 <th *ngFor="let dst of matrix.dstSubnets" style="text-align:center">
-                  <span>{{ dst }}</span>
-                  <span *ngIf="processed.subnetVlan[dst]" style="display:block;font-size:.65rem;color:#888">VLAN {{ processed.subnetVlan[dst] }}</span>
-                  <span *ngIf="processed.subnetVrf[dst]" class="vrf-badge">{{ processed.subnetVrf[dst] }}</span>
+                  <span>{{ endpointText(dst) }}</span>
+                  <span *ngIf="endpointVlan(dst)" style="display:block;font-size:.65rem;color:#888">VLAN {{ endpointVlan(dst) }}</span>
+                  <span *ngIf="endpointVrf(dst)" class="vrf-badge">{{ endpointVrf(dst) }}</span>
                 </th>
               </tr>
             </thead>
             <tbody>
-              <tr *ngFor="let src of matrix.srcSubnets">
+              <tr *ngFor="let src of matrix.rowSubnets || matrix.srcSubnets">
                 <td style="font-weight:600;white-space:nowrap">
-                  {{ src }}
-                  <span *ngIf="processed.subnetVlan[src]" style="font-size:.65rem;color:#888"> VLAN {{ processed.subnetVlan[src] }}</span>
-                  <span *ngIf="processed.subnetVrf[src]" class="vrf-badge">{{ processed.subnetVrf[src] }}</span>
+                  {{ endpointText(src) }}
+                  <span *ngIf="endpointVlan(src)" style="font-size:.65rem;color:#888"> VLAN {{ endpointVlan(src) }}</span>
+                  <span *ngIf="endpointVrf(src)" class="vrf-badge">{{ endpointVrf(src) }}</span>
                 </td>
                 <td *ngFor="let dst of matrix.dstSubnets" [class]="src===dst ? 'c-self' : ''">
-                  <ng-container *ngIf="src!==dst">
+                  <ng-container *ngIf="src!==dst && isUpperTriangleCell(matrix, src, dst)">
                     <clr-tooltip *ngFor="let cell of cellsFor(matrix, src, dst)" class="cell-tooltip-host">
                       <span clrTooltipTrigger
                             class="cell-badge"
+                            [attr.title]="cellTitle(cell)"
                             [class]="cellClass(cell)">
                         <span class="cell-badge-icon">{{ cellIcon(cell) }}</span>
                         <span class="cell-badge-actual">{{ cell.actual }}</span>
@@ -77,6 +78,7 @@
                       </clr-tooltip-content>
                     </clr-tooltip>
                   </ng-container>
+                  <ng-container *ngIf="src!==dst && !isUpperTriangleCell(matrix, src, dst)"></ng-container>
                   <ng-container *ngIf="src===dst">&#x2014;</ng-container>
                 </td>
               </tr>

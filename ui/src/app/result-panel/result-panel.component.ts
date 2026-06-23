@@ -42,6 +42,24 @@ function phaseMeta(phaseId: string): { label: string; color: string } {
   return { label: phaseId, color: 'label-light-blue' };
 }
 
+function endpointKey(subnet: string, cluster?: string): string {
+  const c = String(cluster || '').trim();
+  return `${String(subnet || '')}@@${c}`;
+}
+
+function endpointLabel(subnet: string, cluster?: string): string {
+  const s = String(subnet || '').trim();
+  const c = String(cluster || '').trim();
+  return c ? `${s} (${c})` : s;
+}
+
+function findClusterBySubnetVrf(rows: any[], subnet: string, vrf: string): string {
+  const s = String(subnet || '');
+  const v = String(vrf || '');
+  const hit = (rows || []).find((r: any) => String(r?.subnet || '') === s && String(r?.vrf || '') === v);
+  return String(hit?.cluster || '');
+}
+
 @Component({
   selector: 'app-result-panel',
   standalone: true,
@@ -56,6 +74,7 @@ export class ResultPanelComponent implements OnChanges {
   exporting = false;
   exportMsg = '';
   private vmByKey = new Map<string, any>();
+  private endpointMetaByKey = new Map<string, { subnet: string; cluster: string }>();
 
   private readonly EXPORT_MAX_PIXELS = 16_000_000;
   private readonly EXPORT_MIN_SCALE = 1;
@@ -69,17 +88,35 @@ export class ResultPanelComponent implements OnChanges {
 
   processResult(result: any): any {
     if (!result) return null;
-    const details: any[] = Array.isArray(result.Results) ? result.Results : (result.Results?.details || []);
+    const rawDetails: any[] = Array.isArray(result.Results) ? result.Results : (result.Results?.details || []);
+    const parsedRows: any[] = [
+      ...(result.ParsedInput?.vm_provisioned || []),
+      ...(result.ParsedInput?.mngt_esxi_skipped || []),
+    ];
+    const details: any[] = rawDetails.map((d: any) => {
+      const srcCluster = String(d?.src_cluster || '').trim() || findClusterBySubnetVrf(parsedRows, d?.src_subnet, d?.src_vrf);
+      const dstCluster = String(d?.dst_cluster || '').trim() || findClusterBySubnetVrf(parsedRows, d?.dst_subnet, d?.dst_vrf);
+      return {
+        ...d,
+        src_cluster: srcCluster,
+        dst_cluster: dstCluster,
+      };
+    });
     const createdVms: any[] = Array.isArray(result.Execution?.created_vms) ? result.Execution.created_vms : [];
     this.vmByKey = new Map(
       createdVms
         .filter((vm: any) => vm && vm.subnet)
-        .map((vm: any) => [`${vm.subnet}|${Number(vm.vm_index ?? 0)}`, vm])
+        .map((vm: any) => [endpointKey(vm.subnet, vm.cluster) + `|${Number(vm.vm_index ?? 0)}`, vm])
     );
     const subnetVrf: Record<string, string> = {};
     const subnetVlan: Record<string, string> = {};
     [...(result.ParsedInput?.vm_provisioned || []), ...(result.ParsedInput?.mngt_esxi_skipped || [])].forEach((r: any) => {
-      if (r.subnet) { subnetVrf[r.subnet] = r.vrf || ''; subnetVlan[r.subnet] = r.vlan || ''; }
+      if (r.subnet) {
+        const key = endpointKey(r.subnet, r.cluster);
+        this.endpointMetaByKey.set(key, { subnet: String(r.subnet || ''), cluster: String(r.cluster || '') });
+        subnetVrf[key] = r.vrf || '';
+        subnetVlan[key] = r.vlan || '';
+      }
     });
     const defaultPhaseOrder = ['intra-subnet', 'intra-vrf', 'cross-vrf-allowlist', 'cross-vrf-block'];
     const detailsByPhase: Record<string, any[]> = {};
@@ -103,13 +140,75 @@ export class ResultPanelComponent implements OnChanges {
         return a.localeCompare(b);
       });
     const phaseOrder = [...defaultPhaseOrder, ...extraPhases];
+    // Build axis order from sorted vm_provisioned rows (mirrors backend sort key:
+    // subnet, cluster, datacenter, vlan, gw, vrf) so that for any combinations(i,j) pair
+    // the src axis index is always < dst axis index.
+    const sortedVmRows = [...(result.ParsedInput?.vm_provisioned || [])].sort((a: any, b: any) => {
+      const cmp = (x: any, y: any) => String(x || '').localeCompare(String(y || ''));
+      return cmp(a.subnet, b.subnet)
+          || cmp(a.cluster, b.cluster)
+          || cmp(a.datacenter, b.datacenter)
+          || cmp(a.vlan, b.vlan)
+          || cmp(a.gw, b.gw)
+          || cmp(a.vrf, b.vrf);
+    });
+    const resultEndpointKeys = new Set<string>();
+    details.forEach((d: any) => {
+      resultEndpointKeys.add(endpointKey(d.src_subnet, d.src_cluster));
+      resultEndpointKeys.add(endpointKey(d.dst_subnet, d.dst_cluster));
+    });
+
+    const globalAxisKeys: string[] = [];
+    const globalAxisSeen = new Set<string>();
+    sortedVmRows.forEach((r: any) => {
+      const k = endpointKey(r.subnet, r.cluster);
+      // Render only endpoints participating in this run's result set.
+      if (resultEndpointKeys.size > 0 && !resultEndpointKeys.has(k)) return;
+      if (!globalAxisSeen.has(k)) { globalAxisKeys.push(k); globalAxisSeen.add(k); }
+      if (!this.endpointMetaByKey.has(k)) {
+        this.endpointMetaByKey.set(k, { subnet: String(r.subnet || ''), cluster: String(r.cluster || '') });
+      }
+    });
+
+    // Safety net: include result endpoints that may be absent from ParsedInput.
+    resultEndpointKeys.forEach((k) => {
+      if (globalAxisSeen.has(k)) return;
+      globalAxisKeys.push(k);
+      globalAxisSeen.add(k);
+      if (!this.endpointMetaByKey.has(k)) {
+        const p = k.split('@@');
+        this.endpointMetaByKey.set(k, { subnet: p[0] || '', cluster: p[1] || '' });
+      }
+    });
+
     const matrices = phaseOrder.filter(ph => (detailsByPhase[ph] || []).length > 0).map(ph => {
       const pds = detailsByPhase[ph];
       const meta = phaseMeta(ph);
+      const pairKeys = new Set<string>();
+      // Ensure any endpoint seen in results but not in ParsedInput is still registered
+      pds.forEach((d: any) => {
+        const srcK = endpointKey(d.src_subnet, d.src_cluster);
+        const dstK = endpointKey(d.dst_subnet, d.dst_cluster);
+        pairKeys.add(`${srcK}=>${dstK}`);
+        if (!this.endpointMetaByKey.has(srcK)) {
+          const p = srcK.split('@@');
+          this.endpointMetaByKey.set(srcK, { subnet: p[0] || '', cluster: p[1] || '' });
+        }
+        if (!this.endpointMetaByKey.has(dstK)) {
+          const p = dstK.split('@@');
+          this.endpointMetaByKey.set(dstK, { subnet: p[0] || '', cluster: p[1] || '' });
+        }
+      });
+
+      const rowSubnets = globalAxisKeys.filter((src, srcIdx) =>
+        globalAxisKeys.some((dst, dstIdx) => dstIdx > srcIdx && pairKeys.has(`${src}=>${dst}`))
+      );
+
       return {
         ph, pds,
-        srcSubnets: [...new Set(pds.map((d: any) => d.src_subnet))],
-        dstSubnets: [...new Set(pds.map((d: any) => d.dst_subnet))],
+        rowSubnets,
+        srcSubnets: globalAxisKeys,
+        dstSubnets: globalAxisKeys,
         phaseLabel: meta.label,
         phaseColor: meta.color,
       };
@@ -123,12 +222,44 @@ export class ResultPanelComponent implements OnChanges {
     };
   }
 
+  endpointText(key: string): string {
+    const meta = this.endpointMetaByKey.get(key);
+    if (!meta) return key;
+    return endpointLabel(meta.subnet, meta.cluster);
+  }
+
+  endpointVlan(key: string): string {
+    return this.processed?.subnetVlan?.[key] || '';
+  }
+
+  endpointVrf(key: string): string {
+    return this.processed?.subnetVrf?.[key] || '';
+  }
+
   cellsFor(matrix: any, src: string, dst: string): any[] {
-    return matrix.pds.filter((d: any) => d.src_subnet === src && d.dst_subnet === dst);
+    const srcMeta = this.endpointMetaByKey.get(src);
+    const dstMeta = this.endpointMetaByKey.get(dst);
+    if (!srcMeta || !dstMeta) return [];
+    const srcIdx = matrix?.srcSubnets?.indexOf(src) ?? -1;
+    const dstIdx = matrix?.dstSubnets?.indexOf(dst) ?? -1;
+    if (srcIdx < 0 || dstIdx < 0 || srcIdx >= dstIdx) return [];
+
+    return matrix.pds.filter((d: any) =>
+      d.src_subnet === srcMeta.subnet
+      && String(d.src_cluster || '') === srcMeta.cluster
+      && d.dst_subnet === dstMeta.subnet
+      && String(d.dst_cluster || '') === dstMeta.cluster
+    );
+  }
+
+  isUpperTriangleCell(matrix: any, src: string, dst: string): boolean {
+    const srcIdx = matrix?.srcSubnets?.indexOf(src) ?? -1;
+    const dstIdx = matrix?.dstSubnets?.indexOf(dst) ?? -1;
+    return srcIdx >= 0 && dstIdx >= 0 && srcIdx < dstIdx;
   }
 
   cellTitle(cell: any): string {
-    const key = `${cell.src_subnet}|${Number(cell.src_vm_index ?? 0)}`;
+    const key = endpointKey(cell.src_subnet, cell.src_cluster) + `|${Number(cell.src_vm_index ?? 0)}`;
     const vm = this.vmByKey.get(key);
     const host = vm?.host_name || 'unknown';
     const ip = vm?.ip_address || 'unknown';
@@ -146,7 +277,7 @@ export class ResultPanelComponent implements OnChanges {
   }
 
   cellTooltipLines(cell: any): Array<{ label: string; value: string }> {
-    const key = `${cell.src_subnet}|${Number(cell.src_vm_index ?? 0)}`;
+    const key = endpointKey(cell.src_subnet, cell.src_cluster) + `|${Number(cell.src_vm_index ?? 0)}`;
     const vm = this.vmByKey.get(key);
     return [
       { label: 'src subnet', value: String(cell.src_subnet || '') },
@@ -396,6 +527,12 @@ ${this.exportStyles()}
       .export-chip.ok { background: #dcfce7; color: #14532d; }
       .export-chip.bad { background: #fee2e2; color: #7f1d1d; }
       .matrix-export-area { background: #fff; }
+      /* Static export has no Clarity runtime; hide inlined tooltip panels. */
+      clr-tooltip-content,
+      .cell-tooltip-content,
+      .cell-tooltip {
+        display: none !important;
+      }
       .matrix-wrap { overflow: auto; max-width: 100%; max-height: 70vh; }
       .matrix-table {
         font-size: .75rem;

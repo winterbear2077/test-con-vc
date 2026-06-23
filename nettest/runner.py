@@ -52,6 +52,37 @@ def now_run_id() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
 
+def _collect_case_endpoints(cases: List[TestCase]) -> tuple[set[tuple[str, str]], set[str]]:
+    """Collect selected endpoints from cases.
+
+    Returns:
+      - exact endpoints: (subnet, cluster) when cluster is present
+      - fuzzy endpoints: subnet-only when cluster is absent
+    """
+    exact: set[tuple[str, str]] = set()
+    fuzzy_subnets: set[str] = set()
+    for c in cases:
+        src_cluster = str(getattr(c, "src_cluster", "") or "").strip()
+        dst_cluster = str(getattr(c, "dst_cluster", "") or "").strip()
+        if c.src_subnet:
+            if src_cluster:
+                exact.add((c.src_subnet, src_cluster))
+            else:
+                fuzzy_subnets.add(c.src_subnet)
+        if c.dst_subnet:
+            if dst_cluster:
+                exact.add((c.dst_subnet, dst_cluster))
+            else:
+                fuzzy_subnets.add(c.dst_subnet)
+    return exact, fuzzy_subnets
+
+
+def _row_selected_by_endpoints(row: Any, exact: set[tuple[str, str]], fuzzy_subnets: set[str]) -> bool:
+    if (row.subnet, row.cluster) in exact:
+        return True
+    return row.subnet in fuzzy_subnets
+
+
 def _resolve_input_rows(
     cfg: "RunConfig",
     error_cb: Optional[Callable[[Dict], None]],
@@ -324,8 +355,11 @@ def _run_phased_testing(
         logger.info("  Cases: %s  VMs/subnet: %s", len(phase.cases), phase.vms_per_subnet)
         logger.info(sep)
 
-        phase_subnets = {c.src_subnet for c in phase.cases} | {c.dst_subnet for c in phase.cases}
-        phase_rows = [r for r in accepted if r.subnet in phase_subnets and r.mode == "vm-provisioned"]
+        phase_exact, phase_fuzzy = _collect_case_endpoints(phase.cases)
+        phase_rows = [
+            r for r in accepted
+            if r.mode == "vm-provisioned" and _row_selected_by_endpoints(r, phase_exact, phase_fuzzy)
+        ]
 
         phase_vm_instances: List[Any] = []
         if cfg.execute_vcenter and cfg.probe_mode in ("in-guest", "in-guest-ping") and phase_rows:
@@ -431,10 +465,10 @@ def _run_classic_testing(
     vm_instances: List[Any] = []
     if cfg.execute_vcenter and cfg.probe_mode in ("in-guest", "in-guest-ping"):
         # Provision only subnets participating in the selected cases.
-        selected_subnets = {c.src_subnet for c in cases} | {c.dst_subnet for c in cases}
+        selected_exact, selected_fuzzy = _collect_case_endpoints(cases)
         vm_rows = [
             r for r in accepted
-            if r.mode == "vm-provisioned" and r.subnet in selected_subnets
+            if r.mode == "vm-provisioned" and _row_selected_by_endpoints(r, selected_exact, selected_fuzzy)
         ]
         if vm_rows:
             logger.info("Provisioning test VMs...")
@@ -550,10 +584,10 @@ def _build_result_payload(
 ) -> Dict[str, Any]:
     planned_vms: List[Dict[str, Any]] = []
     if not cfg.execute_vcenter:
-        selected_subnets = {c.src_subnet for c in cases} | {c.dst_subnet for c in cases}
+        selected_exact, selected_fuzzy = _collect_case_endpoints(cases)
         vm_rows = [
             r for r in accepted
-            if r.mode == "vm-provisioned" and r.subnet in selected_subnets
+            if r.mode == "vm-provisioned" and _row_selected_by_endpoints(r, selected_exact, selected_fuzzy)
         ]
         for net_idx, row in enumerate(vm_rows, start=1):
             for vm_idx in range(max(1, int(cfg.vms_per_subnet))):
@@ -567,6 +601,65 @@ def _build_result_payload(
                         "vlan": row.vlan,
                     }
                 )
+
+    def _result_case_key(
+        src_subnet: str,
+        dst_subnet: str,
+        src_vm_index: int,
+        dst_vm_index: int,
+        phase: str,
+        probe_type: str,
+        expected: str,
+    ) -> tuple[Any, ...]:
+        return (
+            src_subnet,
+            dst_subnet,
+            int(src_vm_index),
+            int(dst_vm_index),
+            phase,
+            probe_type,
+            expected,
+        )
+
+    case_cluster_index: Dict[tuple[Any, ...], tuple[str, str]] = {}
+    for c in cases:
+        case_cluster_index[
+            _result_case_key(
+                c.src_subnet,
+                c.dst_subnet,
+                getattr(c, "src_vm_index", 0),
+                getattr(c, "dst_vm_index", 0),
+                getattr(c, "phase", "intra-vrf"),
+                getattr(c, "probe_type", "icmp"),
+                getattr(c, "expected", ""),
+            )
+        ] = (
+            str(getattr(c, "src_cluster", "") or ""),
+            str(getattr(c, "dst_cluster", "") or ""),
+        )
+
+    serialized_results: List[Dict[str, Any]] = []
+    for r in all_results:
+        item = asdict(r)
+        # src_cluster/dst_cluster are now carried on TestResult directly.
+        # Fall back to case_cluster_index lookup when cluster is blank
+        # (e.g. results from non-dry-run probes that pre-date this field).
+        if not item.get("src_cluster") or not item.get("dst_cluster"):
+            k = _result_case_key(
+                item.get("src_subnet", ""),
+                item.get("dst_subnet", ""),
+                item.get("src_vm_index", 0),
+                item.get("dst_vm_index", 0),
+                item.get("phase", "intra-vrf"),
+                item.get("probe_type", "icmp"),
+                item.get("expected", ""),
+            )
+            fb_src, fb_dst = case_cluster_index.get(k, ("", ""))
+            if not item.get("src_cluster"):
+                item["src_cluster"] = fb_src
+            if not item.get("dst_cluster"):
+                item["dst_cluster"] = fb_dst
+        serialized_results.append(item)
 
     failed_results = [r for r in all_results if r.status != "pass"]
     success = len(failed_results) == 0
@@ -630,7 +723,7 @@ def _build_result_payload(
             "planned_vms": planned_vms,
             "planned_vm_summary": {
                 "count": len(planned_vms),
-                "subnets": len({v["subnet"] for v in planned_vms}),
+                "subnets": len({(v["subnet"], v["cluster"]) for v in planned_vms}),
                 "vms_per_subnet": max(1, int(cfg.vms_per_subnet)),
             },
             "skipped_vm_provisioning_rows": [
@@ -640,7 +733,7 @@ def _build_result_payload(
             ],
         },
         "Phases": phase_summaries if cfg.phased_testing else [],
-        "Results": [asdict(r) for r in all_results],
+        "Results": serialized_results,
         "Retry": {"mode": cfg.retry_mode, "history": attempt_history},
         "Cleanup": {
             "success_cleanup_performed": success,

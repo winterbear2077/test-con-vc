@@ -249,6 +249,8 @@ def run_icmp_checks(
                 src_vm_index=getattr(c, "src_vm_index", 0),
                 dst_vm_index=getattr(c, "dst_vm_index", 0),
                 probe_type=getattr(c, "probe_type", "icmp"),
+                src_cluster=str(getattr(c, "src_cluster", "") or ""),
+                dst_cluster=str(getattr(c, "dst_cluster", "") or ""),
             )
             for c in cases
         ]
@@ -313,6 +315,8 @@ def run_icmp_checks(
                         phase=getattr(c, "phase", "intra-vrf"),
                         src_vm_index=getattr(c, "src_vm_index", 0),
                         dst_vm_index=getattr(c, "dst_vm_index", 0),
+                        src_cluster=str(getattr(c, "src_cluster", "") or ""),
+                        dst_cluster=str(getattr(c, "dst_cluster", "") or ""),
                     )
                     for c in cases
                 ]
@@ -327,6 +331,8 @@ def run_icmp_checks(
                     phase=getattr(c, "phase", "intra-vrf"),
                     src_vm_index=getattr(c, "src_vm_index", 0),
                     dst_vm_index=getattr(c, "dst_vm_index", 0),
+                    src_cluster=str(getattr(c, "src_cluster", "") or ""),
+                    dst_cluster=str(getattr(c, "dst_cluster", "") or ""),
                 )
                 for c in cases
             ]
@@ -351,6 +357,8 @@ def run_icmp_checks(
                     phase=getattr(c, "phase", "intra-vrf"),
                     src_vm_index=getattr(c, "src_vm_index", 0),
                     dst_vm_index=getattr(c, "dst_vm_index", 0),
+                    src_cluster=str(getattr(c, "src_cluster", "") or ""),
+                    dst_cluster=str(getattr(c, "dst_cluster", "") or ""),
                 )
                 for c in cases
             ]
@@ -376,6 +384,8 @@ def run_icmp_checks(
                     expected=case.expected, actual="UNKNOWN", status="fail",
                     reason="in-guest-probe-src-vm-not-found",
                     phase=case_phase, src_vm_index=src_vm_idx, dst_vm_index=dst_vm_idx,
+                    src_cluster=str(getattr(case, "src_cluster", "") or ""),
+                    dst_cluster=str(getattr(case, "dst_cluster", "") or ""),
                 ))
                 continue
 
@@ -385,6 +395,8 @@ def run_icmp_checks(
                     expected=case.expected, actual="UNKNOWN", status="fail",
                     reason="in-guest-probe-src-vm-ip-missing",
                     phase=case_phase, src_vm_index=src_vm_idx, dst_vm_index=dst_vm_idx,
+                    src_cluster=str(getattr(case, "src_cluster", "") or ""),
+                    dst_cluster=str(getattr(case, "dst_cluster", "") or ""),
                 ))
                 continue
 
@@ -400,6 +412,8 @@ def run_icmp_checks(
                         expected=case.expected, actual="UNKNOWN", status="fail",
                         reason="in-guest-probe-dst-vm-ip-missing",
                         phase=case_phase, src_vm_index=src_vm_idx, dst_vm_index=dst_vm_idx,
+                        src_cluster=str(getattr(case, "src_cluster", "") or ""),
+                        dst_cluster=str(getattr(case, "dst_cluster", "") or ""),
                     ))
                     continue
             else:
@@ -411,6 +425,8 @@ def run_icmp_checks(
                         expected=case.expected, actual="UNKNOWN", status="fail",
                         reason="in-guest-probe-missing-dst-gateway",
                         phase=case_phase, src_vm_index=src_vm_idx, dst_vm_index=dst_vm_idx,
+                        src_cluster=str(getattr(case, "src_cluster", "") or ""),
+                        dst_cluster=str(getattr(case, "dst_cluster", "") or ""),
                     ))
                     continue
 
@@ -474,6 +490,8 @@ def run_icmp_checks(
                 src_vm_index=src_vm_idx,
                 dst_vm_index=dst_vm_idx,
                 probe_type=case_probe_type,
+                src_cluster=str(getattr(case, "src_cluster", "") or ""),
+                dst_cluster=str(getattr(case, "dst_cluster", "") or ""),
             ))
 
         return results
@@ -490,6 +508,8 @@ def run_icmp_checks(
             phase=getattr(c, "phase", "intra-vrf"),
             src_vm_index=getattr(c, "src_vm_index", 0),
             dst_vm_index=getattr(c, "dst_vm_index", 0),
+            src_cluster=str(getattr(c, "src_cluster", "") or ""),
+            dst_cluster=str(getattr(c, "dst_cluster", "") or ""),
         )
         for c in cases
     ]
