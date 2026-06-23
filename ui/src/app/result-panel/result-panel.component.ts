@@ -200,13 +200,28 @@ export class ResultPanelComponent implements OnChanges {
         }
       });
 
-      const rowSubnets = globalAxisKeys.filter((src, srcIdx) =>
-        globalAxisKeys.some((dst, dstIdx) => dstIdx > srcIdx && pairKeys.has(`${src}=>${dst}`))
-      );
+      const axisIndex = new Map<string, number>(globalAxisKeys.map((k, i) => [k, i]));
+
+      const rowSubnets = globalAxisKeys.filter((src) => {
+        const srcIdx = axisIndex.get(src) ?? -1;
+        return globalAxisKeys.some((dst) => {
+          const dstIdx = axisIndex.get(dst) ?? -1;
+          return dstIdx > srcIdx && pairKeys.has(`${src}=>${dst}`);
+        });
+      });
+
+      const colSubnets = globalAxisKeys.filter((dst) => {
+        const dstIdx = axisIndex.get(dst) ?? -1;
+        return rowSubnets.some((src) => {
+          const srcIdx = axisIndex.get(src) ?? -1;
+          return srcIdx >= 0 && srcIdx < dstIdx && pairKeys.has(`${src}=>${dst}`);
+        });
+      });
 
       return {
         ph, pds,
         rowSubnets,
+        colSubnets,
         srcSubnets: globalAxisKeys,
         dstSubnets: globalAxisKeys,
         phaseLabel: meta.label,

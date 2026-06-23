@@ -44,7 +44,7 @@
             <thead>
               <tr>
                 <th style="text-align:left">src \ dst</th>
-                <th *ngFor="let dst of matrix.dstSubnets" style="text-align:center">
+                <th *ngFor="let dst of matrix.colSubnets || matrix.dstSubnets" style="text-align:center">
                   <span>{{ endpointText(dst) }}</span>
                   <span *ngIf="endpointVlan(dst)" style="display:block;font-size:.65rem;color:#888">VLAN {{ endpointVlan(dst) }}</span>
                   <span *ngIf="endpointVrf(dst)" class="vrf-badge">{{ endpointVrf(dst) }}</span>
@@ -58,7 +58,7 @@
                   <span *ngIf="endpointVlan(src)" style="font-size:.65rem;color:#888"> VLAN {{ endpointVlan(src) }}</span>
                   <span *ngIf="endpointVrf(src)" class="vrf-badge">{{ endpointVrf(src) }}</span>
                 </td>
-                <td *ngFor="let dst of matrix.dstSubnets" [class]="src===dst ? 'c-self' : ''">
+                <td *ngFor="let dst of matrix.colSubnets || matrix.dstSubnets" [class]="src===dst ? 'c-self' : ''">
                   <ng-container *ngIf="src!==dst && isUpperTriangleCell(matrix, src, dst)">
                     <clr-tooltip *ngFor="let cell of cellsFor(matrix, src, dst)" class="cell-tooltip-host">
                       <span clrTooltipTrigger
