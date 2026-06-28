@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import logging
 import os
+import uuid
 from typing import Any, Optional
 
 from urllib.parse import quote as _url_quote
@@ -87,11 +88,14 @@ def ensure_iso_on_datastore(
         return local_iso_path
 
     iso_name = os.path.basename(local_iso_path)
+    iso_stem, iso_ext = os.path.splitext(iso_name)
+    unique_suffix = uuid.uuid4().hex[:8]
+    remote_iso_name = f"{iso_stem}-{unique_suffix}{iso_ext}"
     remote_dir_clean = str(remote_dir or "").strip().strip("/")
     if remote_dir_clean:
-        ds_path = f"[{datastore_name}] {remote_dir_clean}/{iso_name}"
+        ds_path = f"[{datastore_name}] {remote_dir_clean}/{remote_iso_name}"
     else:
-        ds_path = f"[{datastore_name}] {iso_name}"
+        ds_path = f"[{datastore_name}] {remote_iso_name}"
     url      = _ds_path_to_url(vcenter_host, datacenter_name, ds_path)
 
     # Extract the cookie from the SOAP stub — this includes proper quoting
