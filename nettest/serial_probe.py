@@ -105,7 +105,7 @@ class SerialProbeSession:
             assert self._server_sock is not None
             self._client_sock, addr = self._server_sock.accept()
             self._client_sock.settimeout(self.io_timeout)
-            logger.debug("VM connected from %s on port %s", addr, self.port)
+            logger.info("VM serial TCP connected: port=%s peer=%s", self.port, addr)
             return True
         except socket.timeout:
             logger.warning("Timeout waiting for VM serial connection on port %s", self.port)
@@ -117,10 +117,14 @@ class SerialProbeSession:
         line = json.dumps(obj) + "\n"
         self._client_sock.sendall(line.encode())
 
-    def recv(self) -> Dict:
-        """Read one JSON line from the VM (blocking, honours io_timeout)."""
+    def recv(self, timeout: Optional[float] = None) -> Dict:
+        """Read one JSON line from the VM.
+
+        When *timeout* is provided, it overrides the default io_timeout for this call.
+        """
         assert self._client_sock is not None
-        deadline = time.time() + self.io_timeout
+        wait_timeout = self.io_timeout if timeout is None else max(0.1, float(timeout))
+        deadline = time.time() + wait_timeout
         while True:
             if b"\n" in self._buf:
                 line, self._buf = self._buf.split(b"\n", 1)
@@ -227,9 +231,15 @@ class SerialProbeServer:
         n = len(configs)
         results: List[Optional[Dict]] = [None] * n
         errors:  List[Optional[str]]  = [None] * n
+        abort_event = threading.Event()
 
         # ready_events[i] is set when VM i finishes network configuration.
         ready_events = [threading.Event() for _ in range(n)]
+
+        def _mark_error(idx: int, reason: str) -> None:
+            errors[idx] = reason
+            abort_event.set()
+            ready_events[idx].set()
 
         def _run_one(idx: int, cfg: Dict) -> None:
             port    = cfg["port"]
@@ -243,9 +253,11 @@ class SerialProbeServer:
             try:
                 pre_bound = self._pre_bound.get(port)
                 with SerialProbeSession(port, connect_timeout, io_timeout, pre_bound_sock=pre_bound) as sess:
+                    if abort_event.is_set():
+                        _mark_error(idx, "aborted-before-accept")
+                        return
                     if not sess.accept():
-                        errors[idx] = "serial-connect-timeout"
-                        ready_events[idx].set()
+                        _mark_error(idx, "serial-connect-timeout")
                         return
 
                     logger.info(
@@ -255,29 +267,36 @@ class SerialProbeServer:
                         sync,
                     )
 
-                    # ── Wait for probe hello ────────────────────────────────
-                    # The probe sends {"status":"hello"} after opening
-                    # /dev/ttyS0 to signal it is ready.  We MUST wait here
-                    # before sending config; otherwise the config arrives
-                    # before the VM opens the serial device and is silently
-                    # dropped by ESXi.
+                    # ── Prefer probe hello, but allow legacy no-hello flow ─
+                    # Some builds emit an early hello marker before receiving
+                    # config, while older/variant builds do not. Wait a short
+                    # grace period, then continue even if hello is absent.
+                    prefetched_msg: Optional[Dict[str, Any]] = None
+                    hello_grace = min(5.0, float(io_timeout))
                     try:
-                        hello = sess.recv()
-                    except Exception as exc:
-                        errors[idx] = f"serial-hello-timeout: {exc}"
-                        ready_events[idx].set()
-                        return
-                    if hello.get("status") != "hello":
-                        logger.warning(
-                            "Unexpected hello from vm=%s port=%s: %s",
-                            vm_name, port, hello,
+                        hello = sess.recv(timeout=hello_grace)
+                        if hello.get("status") == "hello":
+                            logger.info(
+                                "Serial probe hello received: vm=%s port=%s delay_from_poweron=%.1fs",
+                                vm_name,
+                                port,
+                                max(0.0, time.time() - power_on_ts) if power_on_ts > 0 else 0.0,
+                            )
+                        else:
+                            prefetched_msg = hello
+                            logger.warning(
+                                "Serial probe preface is not hello: vm=%s port=%s msg=%s",
+                                vm_name,
+                                port,
+                                hello,
+                            )
+                    except Exception:
+                        logger.info(
+                            "Serial probe hello not received within %.1fs; continuing legacy flow: vm=%s port=%s",
+                            hello_grace,
+                            vm_name,
+                            port,
                         )
-                    logger.info(
-                        "Serial probe hello received: vm=%s port=%s delay_from_poweron=%.1fs",
-                        vm_name,
-                        port,
-                        max(0.0, time.time() - power_on_ts) if power_on_ts > 0 else 0.0,
-                    )
 
                     if power_on_ts > 0:
                         delay_sec = max(0.0, time.time() - power_on_ts)
@@ -299,7 +318,7 @@ class SerialProbeServer:
                             gw,
                         )
                         sess.send({"ip": ip, "prefix": prefix, "gw": gw})
-                        msg = sess.recv()
+                        msg = prefetched_msg if prefetched_msg is not None else sess.recv()
                         # Some probe builds can emit an extra hello; ignore and
                         # continue waiting for the phase-1 ready marker.
                         if msg.get("status") == "hello":
@@ -317,16 +336,9 @@ class SerialProbeServer:
                             msg,
                         )
                         if msg.get("status") != "ready":
-                            errors[idx] = f"unexpected-phase1-status:{msg}"
-                            ready_events[idx].set()
+                            _mark_error(idx, f"unexpected-phase1-status:{msg}")
                             return
                         ready_events[idx].set()
-
-                        # ── Wait for ALL peers before sending targets ──────
-                        for ev in ready_events:
-                            if not ev.wait(timeout=connect_timeout):
-                                errors[idx] = "peer-ready-timeout"
-                                return
 
                         # ── Phase 2: send targets, receive results ─────────
                         logger.info(
@@ -371,11 +383,10 @@ class SerialProbeServer:
                     if done.get("status") == "done":
                         results[idx] = done.get("results", {})
                     else:
-                        errors[idx] = f"unexpected-done-status:{done}"
+                        _mark_error(idx, f"unexpected-done-status:{done}")
 
             except Exception as exc:
-                errors[idx] = str(exc)
-                ready_events[idx].set()  # unblock peers even on error
+                _mark_error(idx, str(exc))  # unblock peers even on error
 
         threads = [
             threading.Thread(target=_run_one, args=(i, cfg), daemon=True)
@@ -383,10 +394,20 @@ class SerialProbeServer:
         ]
         for t in threads:
             t.start()
-        # Total budget: connect + io + small buffer
+
+        # Total budget: connect + io + small buffer.
         budget = connect_timeout + io_timeout + 30
-        for t in threads:
-            t.join(timeout=budget)
+        deadline = time.time() + budget
+        for idx, t in enumerate(threads):
+            remain = max(0.0, deadline - time.time())
+            t.join(timeout=remain)
+            if t.is_alive():
+                _mark_error(idx, "worker-timeout")
+
+        if abort_event.is_set():
+            pending = [i for i, e in enumerate(errors) if e is None and results[i] is None]
+            for i in pending:
+                errors[i] = "peer-aborted"
 
         return [
             {"results": results[i] or {}, "error": errors[i]}

@@ -249,6 +249,11 @@ def create_memboot_vm(
         serial_backing.serviceURI      = f"tcp://{controller_ip}:{serial_port}"
         serial_backing.direction       = "client"
         serial_dev.backing             = serial_backing
+        serial_conn                    = vim.vm.device.VirtualDevice.ConnectInfo()
+        serial_conn.startConnected     = True
+        serial_conn.connected          = True
+        serial_conn.allowGuestControl  = False
+        serial_dev.connectable         = serial_conn
         serial_dev.yieldOnPoll         = True
         serial_spec                    = vim.vm.device.VirtualDeviceSpec()
         serial_spec.operation          = vim.vm.device.VirtualDeviceSpec.Operation.add
@@ -296,6 +301,29 @@ def create_memboot_vm(
     )
     if vm_obj is None:
         raise RuntimeError(f"CreateVM_Task returned no result for '{vm_name}'")
+
+    if poll_method == "serial":
+        try:
+            serial_devs = [
+                d for d in (vm_obj.config.hardware.device or [])
+                if isinstance(d, vim.vm.device.VirtualSerialPort)
+            ]
+            if not serial_devs:
+                logger.warning("Serial config verify: no VirtualSerialPort found on VM %s", vm_name)
+            else:
+                sdev = serial_devs[0]
+                backing = getattr(sdev, "backing", None)
+                conn = getattr(sdev, "connectable", None)
+                logger.info(
+                    "Serial config verify: vm=%s uri=%s direction=%s connected=%s startConnected=%s",
+                    vm_name,
+                    str(getattr(backing, "serviceURI", "")),
+                    str(getattr(backing, "direction", "")),
+                    bool(getattr(conn, "connected", False)),
+                    bool(getattr(conn, "startConnected", False)),
+                )
+        except Exception as exc:
+            logger.warning("Serial config verify failed for VM %s: %s", vm_name, exc)
 
     logger.info("Created memboot VM: %s (moid=%s)", vm_name, getattr(vm_obj, "_moId", "?"))
     return vm_obj

@@ -103,6 +103,10 @@ def parse_args() -> argparse.Namespace:
         help="First TCP port for serial-port backing; each VM gets base+index.",
     )
     parser.add_argument(
+        "--serial-min-boot-seconds", type=float, default=3.0,
+        help="Minimum seconds after first VM power-on before serial probe exchange starts.",
+    )
+    parser.add_argument(
         "--vsock-base-port", type=int, default=9000,
         help="VMCI/vsock port the guest connects to on VMADDR_CID_HOST (CID=2).",
     )
@@ -180,6 +184,7 @@ def run() -> int:
         poll_method=_get("poll_method", "guestinfo"),
         serial_probe_host=_get("serial_probe_host", ""),
         serial_base_port=_get("serial_base_port", 10000),
+        serial_min_boot_seconds=_get("serial_min_boot_seconds", 3.0),
         vsock_base_port=_get("vsock_base_port", 9000),
         boot_method=_get("boot_method", "memboot"),
         memboot_iso_path=_get("memboot_iso_path", ""),

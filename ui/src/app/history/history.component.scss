@@ -9,6 +9,37 @@
   td { font-weight: 500; }
 }
 
+.cleanup-state-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: .72rem;
+  line-height: 1;
+  color: #3a3a3a;
+  background: #eef2f5;
+  border: 1px solid #d7dee5;
+}
+
+.cleanup-state-pill-ok {
+  background: #e9f7ea;
+  border-color: #b8dfbb;
+  color: #165f0b;
+}
+
+.cleanup-state-pill-partial {
+  background: #fff4e6;
+  border-color: #ffd39f;
+  color: #8f4e00;
+}
+
+.cleanup-state-pill-failed {
+  background: #ffeaea;
+  border-color: #ffc4c4;
+  color: #8b0f00;
+}
+
 /* Pagination */
 .pagination-bar {
   display: flex;

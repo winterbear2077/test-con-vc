@@ -34,32 +34,32 @@
           </tr>
         </thead>
         <tbody>
-          <tr *ngFor="let row of rows; let i = index"
+          <tr *ngFor="let row of rows; let i = index; trackBy: trackByRowId"
               [style.background]="row._mngt ? '#f5f5f5' : ''">
             <td>
-              <select *ngIf="inventory" [(ngModel)]="row.datacenter" class="clr-select" style="min-width:110px">
+              <select *ngIf="inventory" [(ngModel)]="row.datacenter" (ngModelChange)="onDatacenterChange(row)" class="clr-select" style="min-width:110px">
                 <option value="">— DC —</option>
-                <option *ngFor="let dc of dcOptions()" [value]="dc">{{ dc }}</option>
+                <option *ngFor="let dc of dcOptionsList" [value]="dc">{{ dc }}</option>
               </select>
-              <input *ngIf="!inventory" type="text" class="clr-input" [(ngModel)]="row.datacenter" placeholder="datacenter" />
+              <input *ngIf="!inventory" type="text" class="clr-input" [(ngModel)]="row.datacenter" (ngModelChange)="onDatacenterChange(row)" placeholder="datacenter" />
             </td>
             <td>
               <select *ngIf="inventory" [(ngModel)]="row.cluster" (ngModelChange)="onClusterChange(row)" class="clr-select" style="min-width:110px">
                 <option value="">— Cluster —</option>
-                <option *ngFor="let c of clusterOptions(row.datacenter || '')" [value]="c">{{ c }}</option>
+                <option *ngFor="let c of (clusterOptionsByDc[row.datacenter || ''] || ['MNGT'])" [value]="c">{{ c }}</option>
               </select>
               <input *ngIf="!inventory" type="text" class="clr-input" [(ngModel)]="row.cluster" (ngModelChange)="onClusterChange(row)" placeholder="cluster" />
             </td>
             <td>
               <!-- Portgroup dropdown — selecting auto-fills vlan; both stored separately -->
-              <ng-container *ngIf="inventory && pgOptions(row.datacenter || '', row.cluster || '').length">
+              <ng-container *ngIf="inventory && row._pgOptions?.length">
                 <select [(ngModel)]="row['pg']" (ngModelChange)="onPgChange(row)"
                         class="clr-select" style="min-width:200px">
                   <option value="">— Portgroup —</option>
-                  <option *ngFor="let pg of pgOptions(row.datacenter || '', row.cluster || '')" [value]="pg.name">{{ pg.label }}</option>
+                  <option *ngFor="let pg of row._pgOptions" [value]="pg.name">{{ pg.label }}</option>
                 </select>
               </ng-container>
-              <ng-container *ngIf="!inventory || !pgOptions(row.datacenter || '', row.cluster || '').length">
+              <ng-container *ngIf="!inventory || !row._pgOptions?.length">
                 <input type="text" class="clr-input" [(ngModel)]="row['pg']" placeholder="portgroup" style="width:130px" />
                 <input type="text" class="clr-input" [(ngModel)]="row.vlan" placeholder="vlan" style="width:54px;margin-left:4px" />
               </ng-container>

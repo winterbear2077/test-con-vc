@@ -1,7 +1,7 @@
 import { Component, OnInit, Output, EventEmitter, isDevMode } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { ClarityModule } from '@clr/angular';
-import { ApiService, HistoryEntry } from '../api.service';
+import { ApiService, CleanupAllResponse, CleanupRunResponse, HistoryEntry } from '../api.service';
 import { ResultPanelComponent } from '../result-panel/result-panel.component';
 
 @Component({
@@ -18,6 +18,7 @@ export class HistoryComponent implements OnInit {
   loading = false;
   error = '';
   cleaningId: string | null = null;
+  cleaningAll = false;
   cleanErrMsg: Record<string, string> = {};
   deletingId: string | null = null;
   readonly devMode = isDevMode();
@@ -72,12 +73,40 @@ export class HistoryComponent implements OnInit {
   }
 
   cleanup(run: HistoryEntry) {
-    if (run.cleaned) return;
-    if (!confirm('Delete all test VMs for run ' + run.run_id + '?')) return;
+    if (!this.canCleanup(run)) return;
+    if (!confirm('Run cleanup for ' + run.run_id + '? This will delete tracked test VMs/ISOs for this run.')) return;
     this.cleaningId = run.run_id;
     this.api.cleanupRun(run.run_id).subscribe({
-      next: () => { run.cleaned = 1; run.vms_cleaned = 1; this.cleaningId = null; },
+      next: (res: CleanupRunResponse) => {
+        const state = this.normalizeCleanupState(res.cleanup_state);
+        run.cleanup_state = state;
+        run.cleaned = state === 'cleanup' ? 1 : 0;
+        run.vms_cleaned = run.cleaned;
+        const icon = state === 'cleanup' ? '\u2713' : state === 'partial' ? '\u26A0' : '\u2717';
+        this.cleanErrMsg[run.run_id] = `${icon} cleanup=${state} (vm cleaned:${res.cleaned}, vm failed:${res.failed}, vm skipped:${res.skipped}, iso cleaned:${res.iso_cleaned || 0}, iso failed:${res.iso_failed || 0}, remaining:${res.remaining || 0})`;
+        this.cleaningId = null;
+      },
       error: err => { this.cleanErrMsg[run.run_id] = '\u2717 ' + (err.error?.detail || err.message); this.cleaningId = null; }
+    });
+  }
+
+  cleanupAll() {
+    if (!confirm('Delete all possible test artifacts across all runs? This will remove VMs by vm_prefix and tracked uploaded ISOs.')) return;
+    this.cleaningAll = true;
+    this.error = '';
+    this.api.cleanupAllRuns().subscribe({
+      next: (res: CleanupAllResponse) => {
+        const state = this.normalizeCleanupState(res.cleanup_state);
+        this.error = '';
+        this.cleaningAll = false;
+        this.load();
+        this.cleanErrMsg['__global__'] =
+          `\u2713 cleanup-all=${state} (vm cleaned:${res.vm_cleaned}, vm failed:${res.vm_failed}, vm skipped:${res.vm_skipped}, iso cleaned:${res.iso_cleaned}, iso failed:${res.iso_failed}, remaining:${res.remaining})`;
+      },
+      error: err => {
+        this.cleaningAll = false;
+        this.error = 'Cleanup-all failed: ' + (err.error?.detail || err.message);
+      }
     });
   }
 
@@ -96,6 +125,41 @@ export class HistoryComponent implements OnInit {
 
   statusClass(s: string): string {
     return s === 'PASS' ? 'label-success' : s === 'FAIL' ? 'label-danger' : 'label-light-blue';
+  }
+
+  normalizeCleanupState(s?: string): 'pending' | 'cleanup' | 'partial' | 'failed' {
+    const v = String(s || '').trim().toLowerCase();
+    if (v === 'cleanup' || v === 'partial' || v === 'failed') return v;
+    return 'pending';
+  }
+
+  canCleanup(run: HistoryEntry): boolean {
+    const state = this.normalizeCleanupState(run.cleanup_state);
+    return state !== 'cleanup';
+  }
+
+  cleanupStateLabel(run: HistoryEntry): string {
+    const state = this.normalizeCleanupState(run.cleanup_state);
+    if (state === 'cleanup') return 'cleanup';
+    if (state === 'partial') return 'partial clean (failed)';
+    if (state === 'failed') return 'failed';
+    return 'pending';
+  }
+
+  cleanupIcon(run: HistoryEntry): string {
+    const state = this.normalizeCleanupState(run.cleanup_state);
+    if (state === 'cleanup') return 'check-circle';
+    if (state === 'partial') return 'warning-standard';
+    if (state === 'failed') return 'error-standard';
+    return 'vm';
+  }
+
+  cleanupIconColor(run: HistoryEntry): string {
+    const state = this.normalizeCleanupState(run.cleanup_state);
+    if (state === 'cleanup') return '#1d7a0a';
+    if (state === 'partial') return '#d97a00';
+    if (state === 'failed') return '#c92100';
+    return '#666';
   }
 
   formatTime(runId: string): string {

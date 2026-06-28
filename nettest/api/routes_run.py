@@ -52,6 +52,14 @@ def _find_datacenter(content: Any, vim: Any, datacenter_name: str):
     return None
 
 
+def _derive_cleanup_state(remaining: int, cleaned_or_skipped: int) -> str:
+    if remaining <= 0:
+        return "cleanup"
+    if cleaned_or_skipped > 0:
+        return "partial"
+    return "failed"
+
+
 # ── Run model ─────────────────────────────────────────────────────────────────
 class RunIn(BaseModel):
     execute_vcenter: bool = False
@@ -69,6 +77,7 @@ class RunIn(BaseModel):
     poll_method: str = "guestinfo"
     serial_probe_host: str = ""
     serial_base_port: int = 10000
+    serial_min_boot_seconds: float = 3.0
     vsock_base_port: int = 9000
     # VM boot method (ovf | memboot)
     boot_method: str = "memboot"
@@ -219,6 +228,7 @@ def api_start_run(req: RunIn, request: Request, x_vcenter_session: str = Header(
                 poll_method=req.poll_method,
                 serial_probe_host=req.serial_probe_host or str(cfg_dict.get("serial_probe_host", "") or ""),
                 serial_base_port=req.serial_base_port,
+                serial_min_boot_seconds=req.serial_min_boot_seconds,
                 vsock_base_port=req.vsock_base_port,
                 boot_method=req.boot_method or str(cfg_dict.get("boot_method", "ovf") or "ovf"),
                 memboot_iso_path=req.memboot_iso_path or str(cfg_dict.get("memboot_iso_path", "") or ""),
@@ -456,11 +466,23 @@ def api_cleanup_run(run_id: str, request: Request, x_vcenter_session: str = Head
     """Delete all VMs recorded in the created_objects table for a run."""
     registry = _db.get_created_objects(run_id)
     if registry.get("cleaned"):
-        return {"cleaned": 0, "failed": 0, "skipped": 0, "detail": "already cleaned"}
+        _db.set_cleanup_status(run_id, "cleanup", cleanup_details={"detail": "already cleaned"}, cleaned=True)
+        return {
+            "cleaned": 0,
+            "failed": 0,
+            "skipped": 0,
+            "detail": "already cleaned",
+            "cleanup_state": "cleanup",
+        }
     moids = [m for m in registry.get("vms", []) if m and m != "dry-run-moid"]
     iso_entries = [e for e in registry.get("isos", []) if isinstance(e, dict) and e.get("path")]
     if not moids and not iso_entries:
-        _db.mark_cleaned(run_id)
+        _db.set_cleanup_status(
+            run_id,
+            "cleanup",
+            cleanup_details={"detail": "no real VMs/ISOs to delete"},
+            cleaned=True,
+        )
         return {
             "cleaned": 0,
             "failed": 0,
@@ -468,6 +490,7 @@ def api_cleanup_run(run_id: str, request: Request, x_vcenter_session: str = Head
             "iso_cleaned": 0,
             "iso_failed": 0,
             "detail": "no real VMs/ISOs to delete",
+            "cleanup_state": "cleanup",
         }
 
     cfg = _read_config()
@@ -545,8 +568,22 @@ def api_cleanup_run(run_id: str, request: Request, x_vcenter_session: str = Head
         registry["vms"] = [m for m in registry["vms"] if m in failed_moids]
         registry["isos"] = failed_iso_entries
         _db.upsert_created_objects(run_id, registry)
-        if not registry["vms"] and not registry.get("isos"):
-            _db.mark_cleaned(run_id)
+        remaining = len(registry.get("vms", [])) + len(registry.get("isos", []))
+        cleanup_state = _derive_cleanup_state(remaining, cleaned + iso_cleaned + skipped)
+        _db.set_cleanup_status(
+            run_id,
+            cleanup_state,
+            cleanup_details={
+                "cleaned": cleaned,
+                "failed": failed,
+                "skipped": skipped,
+                "iso_cleaned": iso_cleaned,
+                "iso_failed": iso_failed,
+                "remaining": remaining,
+                "failures": failures,
+            },
+            cleaned=(cleanup_state == "cleanup"),
+        )
 
         return {
             "cleaned": cleaned,
@@ -555,6 +592,190 @@ def api_cleanup_run(run_id: str, request: Request, x_vcenter_session: str = Head
             "iso_cleaned": iso_cleaned,
             "iso_failed": iso_failed,
             "failures": failures,
+            "cleanup_state": cleanup_state,
+            "remaining": remaining,
+        }
+    finally:
+        disconnect_vcenter(si)
+
+
+@router.post("/api/run/cleanup-all")
+def api_cleanup_all_runs(request: Request, x_vcenter_session: str = Header(default=""), x_vcenter_host: str = Header(default=""), x_session_token: str = Header(default="")):
+    """Delete all likely test artifacts: VMs by vm_prefix + all tracked ISO uploads."""
+    cfg = _read_config()
+    session_id = x_vcenter_session.strip()
+    vcenter_host = str(cfg.get("vcenter_host", "")).strip() or x_vcenter_host.strip()
+    if not vcenter_host and session_id:
+        vcenter_host = (
+            _header_host(request.headers.get("referer", ""))
+            or _header_host(request.headers.get("origin", ""))
+        )
+    vcenter_user = "" if session_id else str(cfg.get("vcenter_user", "")).strip()
+    vcenter_password = "" if session_id else get_session_password(x_session_token.strip())
+    vm_prefix = str(cfg.get("vm_prefix", "nettest") or "nettest")
+
+    if not session_id:
+        if not vcenter_host:
+            raise HTTPException(400, "vCenter host not configured")
+        if not vcenter_user or not vcenter_password:
+            raise HTTPException(400, "vCenter credentials not configured")
+
+    try:
+        from pyVmomi import vim as _vim
+    except ImportError:
+        raise HTTPException(500, "pyvmomi not installed")
+
+    tracked = _db.list_created_objects()
+    iso_candidates: dict[tuple[str, str], set[str]] = {}
+    for row in tracked:
+        run_id = str(row.get("run_id", ""))
+        for entry in (row.get("isos") or []):
+            if not isinstance(entry, dict):
+                continue
+            ds_path = str(entry.get("path", "")).strip()
+            dc_name = str(entry.get("datacenter", "")).strip()
+            if not ds_path:
+                continue
+            iso_candidates.setdefault((dc_name, ds_path), set()).add(run_id)
+
+    try:
+        si = connect_vcenter_auto(host=vcenter_host, user=vcenter_user, pwd=vcenter_password, session_id=session_id)
+    except Exception as exc:
+        raise HTTPException(502, f"vCenter connect failed: {exc}")
+
+    try:
+        content = si.RetrieveContent()
+        vm_by_moid = get_all_vms_by_moid(content, _vim)
+
+        vm_cleaned = 0
+        vm_failed = 0
+        vm_skipped = 0
+        vm_failures: list[dict[str, str]] = []
+        vm_failed_moids: set[str] = set()
+
+        for moid, vm_obj in vm_by_moid.items():
+            vm_name = str(getattr(vm_obj, "name", ""))
+            if not vm_name.startswith(vm_prefix):
+                continue
+            ok, reason = delete_vm(vm_obj, vm_prefix)
+            if ok:
+                vm_cleaned += 1
+            elif reason == "prefix-mismatch":
+                vm_skipped += 1
+                vm_failed_moids.add(str(moid))
+                vm_failures.append({"moid": str(moid), "name": vm_name, "reason": reason})
+            else:
+                vm_failed += 1
+                vm_failed_moids.add(str(moid))
+                vm_failures.append({"moid": str(moid), "name": vm_name, "reason": reason})
+
+        iso_cleaned = 0
+        iso_failed = 0
+        iso_failures: list[dict[str, str]] = []
+        iso_failed_keys: set[tuple[str, str]] = set()
+        for dc_name, ds_path in iso_candidates.keys():
+            try:
+                dc_obj = _find_datacenter(content, _vim, dc_name) if dc_name else None
+                task = content.fileManager.DeleteDatastoreFile_Task(name=ds_path, datacenter=dc_obj)
+                task_result = str(getattr(task.info, "state", ""))
+                if task_result != "success":
+                    from nettest.vcenter_utils import wait_for_task
+                    wait_for_task(task)
+                iso_cleaned += 1
+            except Exception as exc:
+                iso_failed += 1
+                iso_failed_keys.add((dc_name, ds_path))
+                iso_failures.append({"datacenter": dc_name, "iso_path": ds_path, "reason": str(exc)})
+
+        per_run: list[dict[str, Any]] = []
+        for row in tracked:
+            run_id = str(row.get("run_id", ""))
+            reg = _db.get_created_objects(run_id)
+
+            old_vms = [str(m) for m in (reg.get("vms") or []) if str(m).strip()]
+            new_vms: list[str] = []
+            run_vm_touched = 0
+            run_vm_cleaned = 0
+
+            for moid in old_vms:
+                vm_obj = vm_by_moid.get(moid)
+                if vm_obj is None:
+                    run_vm_touched += 1
+                    run_vm_cleaned += 1
+                    continue
+                vm_name = str(getattr(vm_obj, "name", ""))
+                if vm_name.startswith(vm_prefix):
+                    run_vm_touched += 1
+                    if moid in vm_failed_moids:
+                        new_vms.append(moid)
+                    else:
+                        run_vm_cleaned += 1
+                else:
+                    new_vms.append(moid)
+
+            old_isos = [e for e in (reg.get("isos") or []) if isinstance(e, dict) and e.get("path")]
+            new_isos: list[dict[str, str]] = []
+            run_iso_touched = 0
+            run_iso_cleaned = 0
+
+            for entry in old_isos:
+                dc_name = str(entry.get("datacenter", "")).strip()
+                ds_path = str(entry.get("path", "")).strip()
+                if not ds_path:
+                    continue
+                key = (dc_name, ds_path)
+                if key in iso_candidates:
+                    run_iso_touched += 1
+                    if key in iso_failed_keys:
+                        new_isos.append(entry)
+                    else:
+                        run_iso_cleaned += 1
+                else:
+                    new_isos.append(entry)
+
+            reg["vms"] = new_vms
+            reg["isos"] = new_isos
+            _db.upsert_created_objects(run_id, reg)
+
+            remaining = len(new_vms) + len(new_isos)
+            touched = run_vm_touched + run_iso_touched
+            cleaned_or_skipped = run_vm_cleaned + run_iso_cleaned
+            if touched > 0:
+                state = _derive_cleanup_state(remaining, cleaned_or_skipped)
+                _db.set_cleanup_status(
+                    run_id,
+                    state,
+                    cleanup_details={
+                        "scope": "cleanup-all",
+                        "vms_cleaned": run_vm_cleaned,
+                        "isos_cleaned": run_iso_cleaned,
+                        "remaining": remaining,
+                    },
+                    cleaned=(state == "cleanup"),
+                )
+                per_run.append(
+                    {
+                        "run_id": run_id,
+                        "cleanup_state": state,
+                        "remaining": remaining,
+                        "vms_cleaned": run_vm_cleaned,
+                        "isos_cleaned": run_iso_cleaned,
+                    }
+                )
+
+        total_remaining = sum(int(item.get("remaining", 0)) for item in per_run)
+        overall_state = _derive_cleanup_state(total_remaining, vm_cleaned + iso_cleaned + vm_skipped)
+        return {
+            "cleanup_state": overall_state,
+            "vm_prefix": vm_prefix,
+            "vm_cleaned": vm_cleaned,
+            "vm_failed": vm_failed,
+            "vm_skipped": vm_skipped,
+            "iso_cleaned": iso_cleaned,
+            "iso_failed": iso_failed,
+            "remaining": total_remaining,
+            "run_updates": per_run,
+            "failures": vm_failures + iso_failures,
         }
     finally:
         disconnect_vcenter(si)

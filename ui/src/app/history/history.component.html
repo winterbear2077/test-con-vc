@@ -1,12 +1,23 @@
 <div class="section-header" style="justify-content:space-between">
   <span><clr-icon shape="history" size="20"></clr-icon> History</span>
-  <button class="btn btn-outline btn-sm" (click)="load()">
-    <clr-icon shape="refresh" size="14"></clr-icon> Refresh
-  </button>
+  <div style="display:flex;gap:8px;align-items:center">
+    <button class="btn btn-outline-danger btn-sm" (click)="cleanupAll()" [disabled]="cleaningAll || loading || deletingId!==null || cleaningId!==null" title="Delete all possible test VMs/ISOs">
+      <clr-spinner *ngIf="cleaningAll" clrInline></clr-spinner>
+      <clr-icon *ngIf="!cleaningAll" shape="trash" size="14"></clr-icon>
+      {{ cleaningAll ? 'Cleaning All...' : 'Clean All Test Artifacts' }}
+    </button>
+    <button class="btn btn-outline btn-sm" (click)="load()" [disabled]="loading || cleaningAll">
+      <clr-icon shape="refresh" size="14"></clr-icon> Refresh
+    </button>
+  </div>
 </div>
 
 <clr-alert *ngIf="error" [clrAlertType]="'danger'" [clrAlertClosable]="true" (clrAlertClosedChange)="error=''">
   <clr-alert-item><span class="alert-text">{{ error }}</span></clr-alert-item>
+</clr-alert>
+
+<clr-alert *ngIf="cleanErrMsg['__global__']" [clrAlertType]="'info'" [clrAlertClosable]="true" (clrAlertClosedChange)="cleanErrMsg['__global__']=''">
+  <clr-alert-item><span class="alert-text">{{ cleanErrMsg['__global__'] }}</span></clr-alert-item>
 </clr-alert>
 
 <div class="card">
@@ -15,40 +26,51 @@
       <thead>
         <tr>
           <th>Time (UTC)</th><th>Status</th><th>Probe Mode</th>
-          <th>Passed</th><th>Failed</th><th>Total</th><th style="width:80px"></th>
+          <th>Cleanup</th><th>Passed</th><th>Failed</th><th>Total</th><th style="width:100px"></th>
         </tr>
       </thead>
       <tbody>
         <tr *ngIf="loading">
-          <td colspan="7" style="text-align:center;padding:1rem">
+          <td colspan="8" style="text-align:center;padding:1rem">
             <clr-spinner clrInline></clr-spinner> Loading...
           </td>
         </tr>
         <tr *ngIf="!loading && !runs.length">
-          <td colspan="7" style="text-align:center;padding:1rem" class="text-muted p6">No runs yet.</td>
+          <td colspan="8" style="text-align:center;padding:1rem" class="text-muted p6">No runs yet.</td>
         </tr>
-        <tr *ngFor="let r of pageRuns"
-            (click)="selectRun(r)"
-            [class.history-row-selected]="selectedRunId === r.run_id"
-            class="history-row">
-          <td><code class="text-muted" style="font-size:.8rem">{{ formatTime(r.run_id) }}</code></td>
-          <td><span class="label" [ngClass]="statusClass(r.status)">{{ r.status }}</span></td>
-          <td class="p6 text-muted">{{ r.probe_mode }}</td>
-          <td class="text-success">{{ r.passed }}</td>
-          <td [class.text-danger]="r.failed">{{ r.failed || '&mdash;' }}</td>
-          <td class="text-muted">{{ r.total }}</td>
-          <td (click)="$event.stopPropagation()">
-            <button class="btn btn-icon btn-sm btn-link" (click)="cleanup(r)" [disabled]="cleaningId === r.run_id || deletingId === r.run_id || !!r.cleaned" [title]="r.cleaned ? 'VMs deleted' : 'Delete test VMs'">
-              <clr-spinner *ngIf="cleaningId===r.run_id" clrInline></clr-spinner>
-              <clr-icon *ngIf="cleaningId!==r.run_id && !r.cleaned" shape="vm" style="color:#c92100"></clr-icon>
-              <clr-icon *ngIf="cleaningId!==r.run_id && !!r.cleaned" shape="check-circle" style="color:#1d7a0a"></clr-icon>
-            </button>
-            <button *ngIf="devMode" class="btn btn-icon btn-sm btn-link" (click)="deleteRecord(r.run_id)" [disabled]="deletingId === r.run_id || cleaningId === r.run_id" title="Remove from history">
-              <clr-spinner *ngIf="deletingId===r.run_id" clrInline></clr-spinner>
-              <clr-icon *ngIf="deletingId!==r.run_id" shape="trash" style="color:#c92100"></clr-icon>
-            </button>
-          </td>
-        </tr>
+        <ng-container *ngFor="let r of pageRuns">
+          <tr (click)="selectRun(r)"
+              [class.history-row-selected]="selectedRunId === r.run_id"
+              class="history-row">
+            <td><code class="text-muted" style="font-size:.8rem">{{ formatTime(r.run_id) }}</code></td>
+            <td><span class="label" [ngClass]="statusClass(r.status)">{{ r.status }}</span></td>
+            <td class="p6 text-muted">{{ r.probe_mode }}</td>
+            <td>
+              <span class="cleanup-state-pill" [class.cleanup-state-pill-ok]="normalizeCleanupState(r.cleanup_state)==='cleanup'" [class.cleanup-state-pill-partial]="normalizeCleanupState(r.cleanup_state)==='partial'" [class.cleanup-state-pill-failed]="normalizeCleanupState(r.cleanup_state)==='failed'">
+                <clr-icon [shape]="cleanupIcon(r)" [style.color]="cleanupIconColor(r)" size="14"></clr-icon>
+                <span>{{ cleanupStateLabel(r) }}</span>
+              </span>
+            </td>
+            <td class="text-success">{{ r.passed }}</td>
+            <td [class.text-danger]="r.failed">{{ r.failed || '&mdash;' }}</td>
+            <td class="text-muted">{{ r.total }}</td>
+            <td (click)="$event.stopPropagation()">
+              <button class="btn btn-icon btn-sm btn-link" (click)="cleanup(r)" [disabled]="cleaningId === r.run_id || deletingId === r.run_id || cleaningAll || !canCleanup(r)" [title]="canCleanup(r) ? 'Run cleanup for this run' : 'Already fully cleaned'">
+                <clr-spinner *ngIf="cleaningId===r.run_id" clrInline></clr-spinner>
+                <clr-icon *ngIf="cleaningId!==r.run_id" [shape]="canCleanup(r) ? 'refresh' : 'check-circle'" [style.color]="canCleanup(r) ? '#0079b8' : '#1d7a0a'"></clr-icon>
+              </button>
+              <button *ngIf="devMode" class="btn btn-icon btn-sm btn-link" (click)="deleteRecord(r.run_id)" [disabled]="deletingId === r.run_id || cleaningId === r.run_id || cleaningAll" title="Remove from history">
+                <clr-spinner *ngIf="deletingId===r.run_id" clrInline></clr-spinner>
+                <clr-icon *ngIf="deletingId!==r.run_id" shape="trash" style="color:#c92100"></clr-icon>
+              </button>
+            </td>
+          </tr>
+          <tr *ngIf="cleanErrMsg[r.run_id]">
+            <td colspan="8" class="text-muted p6" style="padding-top:0;padding-bottom:.35rem">
+              {{ cleanErrMsg[r.run_id] }}
+            </td>
+          </tr>
+        </ng-container>
       </tbody>
     </table>
   </div>

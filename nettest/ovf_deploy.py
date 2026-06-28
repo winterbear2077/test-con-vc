@@ -510,6 +510,11 @@ def add_serial_port_tcp(
     backing.serviceURI = f"tcp://{controller_ip}:{port}"
     backing.direction = "client"  # ESXi connects outbound to the controller
     serial.backing = backing
+    conn = vim.vm.device.VirtualDevice.ConnectInfo()
+    conn.startConnected = True
+    conn.connected = True
+    conn.allowGuestControl = False
+    serial.connectable = conn
     serial.yieldOnPoll = True
 
     spec = vim.vm.device.VirtualDeviceSpec()

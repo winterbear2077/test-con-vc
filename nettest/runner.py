@@ -300,6 +300,44 @@ def _cleanup_uploaded_isos(
     return out
 
 
+def _prune_cleaned_vms_from_registry(
+    *,
+    created_registry: Dict[str, List[Any]],
+    persist_registry: Callable[[], None],
+    instances: List[Any],
+    cleanup_result: Optional[Dict[str, Any]],
+) -> None:
+    if not instances or not cleanup_result:
+        return
+
+    cleaned_count = int(cleanup_result.get("instances_cleaned", 0) or 0)
+    if cleaned_count <= 0:
+        return
+
+    failed_moids = {
+        str(item.get("moid", "")).strip()
+        for item in (cleanup_result.get("failed_vms") or [])
+        if isinstance(item, dict)
+    }
+    cleaned_moids = {
+        str(getattr(inst, "moid", "")).strip()
+        for inst in instances
+        if str(getattr(inst, "moid", "")).strip() and str(getattr(inst, "moid", "")).strip() not in failed_moids
+    }
+    if not cleaned_moids:
+        return
+
+    before = len(created_registry.get("vms", []))
+    created_registry["vms"] = [
+        moid
+        for moid in (created_registry.get("vms", []) or [])
+        if str(moid).strip() not in cleaned_moids
+    ]
+    after = len(created_registry.get("vms", []))
+    if after != before:
+        persist_registry()
+
+
 def _run_phased_testing(
     *,
     cfg: "RunConfig",
@@ -421,8 +459,18 @@ def _run_phased_testing(
         if ph_failed:
             had_failure = True
             if phase_vm_instances:
-                if cfg.cleanup_on_failure:
-                    cleanup_vms(phase_vm_instances, cfg, on_failure=True)
+                force_phase_cleanup = phase.phase_id == "intra-subnet"
+                if cfg.cleanup_on_failure or force_phase_cleanup:
+                    # For phased runs, intra-subnet is high-volume and should always
+                    # be cleaned to avoid leftover VM buildup after early failure.
+                    phase_cleanup = cleanup_vms(phase_vm_instances, cfg, on_failure=not force_phase_cleanup)
+                    logger.info("Phase failure cleanup result: %s", phase_cleanup)
+                    _prune_cleaned_vms_from_registry(
+                        created_registry=created_registry,
+                        persist_registry=persist_registry,
+                        instances=phase_vm_instances,
+                        cleanup_result=phase_cleanup,
+                    )
                 else:
                     logger.warning("Phase failed — retaining VMs for troubleshooting.")
             logger.warning("Stopping after phase [%s] failure.", phase.phase_id)
@@ -430,7 +478,14 @@ def _run_phased_testing(
 
         if phase_vm_instances:
             logger.info("Cleaning up %s phase VMs...", len(phase_vm_instances))
-            cleanup_vms(phase_vm_instances, cfg, on_failure=False)
+            phase_cleanup = cleanup_vms(phase_vm_instances, cfg, on_failure=False)
+            logger.info("Phase cleanup result: %s", phase_cleanup)
+            _prune_cleaned_vms_from_registry(
+                created_registry=created_registry,
+                persist_registry=persist_registry,
+                instances=phase_vm_instances,
+                cleanup_result=phase_cleanup,
+            )
 
     iso_cleanup = _cleanup_uploaded_isos(
         cfg=cfg,
@@ -550,6 +605,12 @@ def _run_classic_testing(
         logger.info("Cleaning up test VMs...")
         cleanup_result = cleanup_vms(vm_instances, cfg, on_failure=bool(failed_results))
         logger.info("VM cleanup completed: %s", cleanup_result)
+        _prune_cleaned_vms_from_registry(
+            created_registry=created_registry,
+            persist_registry=persist_registry,
+            instances=vm_instances,
+            cleanup_result=cleanup_result,
+        )
 
     iso_cleanup = _cleanup_uploaded_isos(
         cfg=cfg,
@@ -794,6 +855,8 @@ class RunConfig:
         serial_probe_host: str = "",
         # first TCP port for serial-port backing; each VM gets base+index
         serial_base_port: int = 10000,
+        # minimum seconds from first VM power-on to start serial probe exchange
+        serial_min_boot_seconds: float = 3.0,
         # vsock port the guest connects to on VMADDR_CID_HOST (CID=2)
         vsock_base_port: int = 9000,
         # ── VM boot method ────────────────────────────────────────────────────
@@ -838,6 +901,7 @@ class RunConfig:
         self.poll_method = poll_method
         self.serial_probe_host = serial_probe_host
         self.serial_base_port = serial_base_port
+        self.serial_min_boot_seconds = serial_min_boot_seconds
         self.vsock_base_port = vsock_base_port
         self.boot_method = boot_method
         self.memboot_iso_path = memboot_iso_path

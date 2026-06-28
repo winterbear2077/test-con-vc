@@ -5,7 +5,17 @@ import { ClarityModule } from '@clr/angular';
 import { ApiService, NetworkRow, VcInventory } from '../api.service';
 import { PluginContextService } from '../plugin-context.service';
 
-interface EditableRow extends NetworkRow { _mngt?: boolean; }
+interface PgOption {
+  name: string;
+  vlan: string;
+  label: string;
+}
+
+interface EditableRow extends NetworkRow {
+  _id?: number;
+  _mngt?: boolean;
+  _pgOptions?: PgOption[];
+}
 
 interface InventoryRow extends EditableRow {}
 
@@ -23,6 +33,12 @@ export class InputNetworksComponent implements OnInit {
   syncing = false;
   importing = false;
 
+  dcOptionsList: string[] = [];
+  clusterOptionsByDc: Record<string, string[]> = {};
+  pgOptionsByDcCluster: Record<string, PgOption[]> = {};
+
+  private nextRowId = 1;
+
   constructor(private api: ApiService, private pluginCtx: PluginContextService) {}
 
   ngOnInit() {
@@ -33,7 +49,7 @@ export class InputNetworksComponent implements OnInit {
 
   load() {
     this.api.getInput().subscribe({
-      next: r => { this.rows = r.rows.map(row => ({ ...row, _mngt: (row['cluster'] || '').toUpperCase() === 'MNGT' })); },
+      next: r => { this.rows = this.prepareRows(r.rows); },
       error: err => console.error('getInput', err)
     });
   }
@@ -66,7 +82,8 @@ export class InputNetworksComponent implements OnInit {
     this.api.getInventory().subscribe({
       next: inv => {
         this.inventory = inv;
-        this.rows = this._mergeRowsWithInventory(this.rows, this._rowsFromInventory(inv));
+        this.updateInventoryOptionCaches(inv);
+        this.rows = this.prepareRows(this._mergeRowsWithInventory(this.rows, this._rowsFromInventory(inv)));
         this.syncing = false;
         this.msg = '✓ Merged ' + this.rows.length + ' network row(s) from vCenter';
         setTimeout(() => this.msg = '', 4000);
@@ -221,15 +238,25 @@ export class InputNetworksComponent implements OnInit {
     }
   }
 
-  addRow() { this.rows.push({ datacenter: '', cluster: '', pg: '', vlan: '', subnet: '', gw: '', vrf: '', _mngt: false }); }
+  addRow() {
+    this.rows.push(this.prepareRow({ datacenter: '', cluster: '', pg: '', vlan: '', subnet: '', gw: '', vrf: '' }));
+  }
 
   deleteRow(i: number) { this.rows.splice(i, 1); }
+
+  onDatacenterChange(row: EditableRow) {
+    row.cluster = '';
+    row['pg'] = '';
+    row['vlan'] = '';
+    this.refreshRowDerived(row);
+  }
 
   onClusterChange(row: EditableRow) {
     row._mngt = (row['cluster'] || '').toUpperCase() === 'MNGT';
     // clear pg when cluster changes
     row['pg'] = '';
     row['vlan'] = '';
+    this.refreshRowDerived(row);
   }
 
   /** When a portgroup is selected, auto-fill vlan from inventory. */
@@ -255,7 +282,7 @@ export class InputNetworksComponent implements OnInit {
     this.api.previewInput(file).subscribe({
       next: res => {
         this.importing = false;
-        this.rows = res.rows.map(r => ({ ...r, _mngt: (r['cluster'] || '').toUpperCase() === 'MNGT' }));
+        this.rows = this.prepareRows(res.rows);
         const rejNote = res.rejected.length ? ` — ${res.rejected.length} row(s) rejected (see console)` : '';
         this.msg = `✓ ${res.count} row(s) accepted${rejNote} — click Save to confirm`;
         if (res.rejected.length) {
@@ -270,6 +297,65 @@ export class InputNetworksComponent implements OnInit {
     });
   }
 
+  trackByRowId(_: number, row: EditableRow): number {
+    return row._id || 0;
+  }
+
+  private prepareRows(rows: NetworkRow[]): EditableRow[] {
+    return rows.map((row) => this.prepareRow(row));
+  }
+
+  private prepareRow(row: Partial<NetworkRow> & { _id?: number }): EditableRow {
+    const prepared: EditableRow = {
+      datacenter: row.datacenter || '',
+      cluster: row.cluster || '',
+      pg: row['pg'] || '',
+      vlan: row.vlan || '',
+      subnet: row.subnet || '',
+      gw: row.gw || '',
+      vrf: row.vrf || '',
+      _id: row._id || this.nextRowId++,
+    };
+    this.refreshRowDerived(prepared);
+    return prepared;
+  }
+
+  private refreshRowDerived(row: EditableRow) {
+    row._mngt = (row.cluster || '').toUpperCase() === 'MNGT';
+    row._pgOptions = this.getPgOptions(row.datacenter || '', row.cluster || '');
+  }
+
+  private getPgOptions(dc: string, cluster: string): PgOption[] {
+    return this.pgOptionsByDcCluster[this.pgKey(dc, cluster)] || [];
+  }
+
+  private pgKey(dc: string, cluster: string): string {
+    return dc + '::' + cluster;
+  }
+
+  private updateInventoryOptionCaches(inv: VcInventory) {
+    this.dcOptionsList = inv.datacenters || [];
+    this.clusterOptionsByDc = {};
+    this.pgOptionsByDcCluster = {};
+
+    for (const dc of this.dcOptionsList) {
+      const clusters = inv.clusters?.[dc] || [];
+      this.clusterOptionsByDc[dc] = ['MNGT', ...clusters.filter(c => c !== 'MNGT')];
+
+      for (const cluster of clusters) {
+        const pgs = inv.portgroups?.[dc]?.[cluster] || [];
+        this.pgOptionsByDcCluster[this.pgKey(dc, cluster)] = pgs.map(p => {
+          const hasVlan = p.vlan && p.vlan !== '0';
+          return {
+            name: p.name,
+            vlan: hasVlan ? p.vlan : '',
+            label: hasVlan ? p.name + ' [' + p.vlan + ']' : p.name,
+          };
+        });
+      }
+    }
+  }
+
   save() {
     const cleanRows = this.rows
       .filter(r => Object.keys(r).filter(k => !k.startsWith('_')).some(k => (r as any)[k]))
@@ -280,18 +366,4 @@ export class InputNetworksComponent implements OnInit {
     });
   }
 
-  dcOptions(): string[] { return this.inventory?.datacenters || []; }
-
-  clusterOptions(dc: string): string[] {
-    const inv = this.inventory?.clusters?.[dc] || [];
-    return ['MNGT', ...inv.filter(c => c !== 'MNGT')];
-  }
-
-  pgOptions(dc: string, cluster: string): Array<{ name: string; vlan: string; label: string }> {
-    const pgs = this.inventory?.portgroups?.[dc]?.[cluster] || [];
-    return pgs.map(p => {
-      const hasVlan = p.vlan && p.vlan !== '0';
-      return { name: p.name, vlan: hasVlan ? p.vlan : '', label: hasVlan ? p.name + ' [' + p.vlan + ']' : p.name };
-    });
-  }
 }

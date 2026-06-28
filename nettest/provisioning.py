@@ -657,6 +657,23 @@ def provision_test_vms(
 
             poll_method = str(getattr(args, "poll_method", "guestinfo"))
 
+            serial_fw_enabled_hosts: Set[str] = set()
+            if poll_method == "serial":
+                # DRS can power on a VM on a different host than the planned
+                # round-robin target, so pre-enable remoteSerialPort on all
+                # eligible hosts in the cluster.
+                for host_obj in avail_hosts:
+                    host_name = str(getattr(host_obj, "name", "") or "")
+                    if not host_name or host_name in serial_fw_enabled_hosts:
+                        continue
+                    try:
+                        fw = host_obj.configManager.firewallSystem
+                        fw.EnableRuleset(id="remoteSerialPort")
+                        serial_fw_enabled_hosts.add(host_name)
+                        logger.info("ESXi firewall remoteSerialPort enabled on %s", host_name)
+                    except Exception as exc:
+                        logger.warning("Could not enable remoteSerialPort firewall on %s: %s", host_name, exc)
+
             # ── Pre-compute serial / vsock resources for this subnet ───────────
             # Serial: reserve one TCP port per VM before cloning so the port is
             # known when we call add_serial_port_tcp (VM must be powered off).
@@ -682,6 +699,7 @@ def provision_test_vms(
             # For serial/vsock: attach device, then power on (no extraConfig needed).
             subnet_vm_objs: List[Any] = []
             subnet_vm_names: List[str] = []
+            subnet_vm_hosts: List[str] = []
             subnet_power_on_ts: List[float] = []
             vm_needs_wait:  List[bool] = []   # only meaningful for guestinfo mode
 
@@ -779,22 +797,46 @@ def provision_test_vms(
                     )
                     vm_needs_wait.append(False)  # memboot always uses protocol sync
 
-                if poll_method == "serial":
-                    try:
-                        fw = host_obj_for_vm.configManager.firewallSystem
-                        fw.EnableRuleset(id="remoteSerialPort")
-                        logger.info("ESXi firewall remoteSerialPort enabled on %s", host_obj_for_vm.name)
-                    except Exception as _fw_exc:
-                        logger.warning("Could not enable remoteSerialPort firewall on %s: %s", host_obj_for_vm.name, _fw_exc)
-
                 wait_for_task(vm_obj.PowerOnVM_Task())
                 power_on_ts = time.time()
+                actual_host_obj = getattr(getattr(vm_obj, "runtime", None), "host", None)
+                actual_host_name = str(getattr(actual_host_obj, "name", "") or "")
+                planned_host_name = str(getattr(host_obj_for_vm, "name", "") or "")
+                if not actual_host_name:
+                    actual_host_name = planned_host_name
+
+                if (
+                    poll_method == "serial"
+                    and actual_host_obj is not None
+                    and actual_host_name
+                    and actual_host_name not in serial_fw_enabled_hosts
+                ):
+                    try:
+                        fw = actual_host_obj.configManager.firewallSystem
+                        fw.EnableRuleset(id="remoteSerialPort")
+                        serial_fw_enabled_hosts.add(actual_host_name)
+                        logger.info("ESXi firewall remoteSerialPort enabled on runtime host %s", actual_host_name)
+                    except Exception as _fw_exc:
+                        logger.warning(
+                            "Could not enable remoteSerialPort firewall on runtime host %s: %s",
+                            actual_host_name,
+                            _fw_exc,
+                        )
+
+                if actual_host_name and planned_host_name and actual_host_name != planned_host_name:
+                    logger.warning(
+                        "DRS host drift detected for %s: planned=%s actual=%s",
+                        vm_name,
+                        planned_host_name,
+                        actual_host_name,
+                    )
                 logger.info(
                     "Powered on: %s (boot=%s, poll=%s, host=%s)",
-                    vm_name, boot_method, poll_method, host_obj_for_vm.name,
+                    vm_name, boot_method, poll_method, actual_host_name,
                 )
                 subnet_vm_objs.append(vm_obj)
                 subnet_vm_names.append(vm_name)
+                subnet_vm_hosts.append(actual_host_name)
                 subnet_power_on_ts.append(power_on_ts)
 
             # ── Phase 2 (guestinfo only): wait for VMware Tools ───────────────
@@ -856,6 +898,71 @@ def provision_test_vms(
 
             elif poll_method == "serial":
                 _serial_server = getattr(args, "_serial_server")
+                is_memboot = str(getattr(args, "boot_method", "memboot") or "memboot") == "memboot"
+                preflight_sec = 8
+                if subnet_vm_objs:
+                    logger.info(
+                        "Serial preflight: monitoring VM serial connected state for up to %ss",
+                        preflight_sec,
+                    )
+                serial_connected_once = [False] * len(subnet_vm_objs)
+                for tick in range(preflight_sec):
+                    for vi, vm_obj in enumerate(subnet_vm_objs):
+                        try:
+                            config_obj = getattr(vm_obj, "config", None)
+                            hardware_obj = getattr(config_obj, "hardware", None)
+                            devs = list(getattr(hardware_obj, "device", None) or [])
+                            sdev = next((d for d in devs if d.__class__.__name__.endswith("VirtualSerialPort")), None)
+                            conn = getattr(sdev, "connectable", None) if sdev is not None else None
+                            backing = getattr(sdev, "backing", None) if sdev is not None else None
+                            connected = bool(getattr(conn, "connected", False))
+                            start_connected = bool(getattr(conn, "startConnected", False))
+                            uri = str(getattr(backing, "serviceURI", ""))
+                            pstate = str(getattr(getattr(vm_obj, "runtime", None), "powerState", ""))
+                            logger.info(
+                                "Serial preflight tick=%s vm=%s power=%s connected=%s startConnected=%s uri=%s",
+                                tick + 1,
+                                vm_obj.name,
+                                pstate,
+                                connected,
+                                start_connected,
+                                uri,
+                            )
+                            if connected:
+                                serial_connected_once[vi] = True
+                        except Exception as exc:
+                            logger.debug("Serial preflight inspect failed for %s: %s", getattr(vm_obj, "name", "?"), exc)
+                    if all(serial_connected_once):
+                        break
+                    time.sleep(1)
+
+                for vi, vm_obj in enumerate(subnet_vm_objs):
+                    if not serial_connected_once[vi]:
+                        logger.warning(
+                            "Serial preflight: ESXi did not establish serial TCP session before probe start: vm=%s port=%s",
+                            vm_obj.name,
+                            serial_ports[vi] if vi < len(serial_ports) else -1,
+                        )
+
+                # In memboot mode, give the guest a brief warmup window even
+                # when the serial TCP link is already connected at hypervisor level.
+                # This avoids starting protocol exchange at ~0s after power-on.
+                if is_memboot and subnet_power_on_ts:
+                    min_boot_to_probe_sec = max(
+                        0.0,
+                        float(getattr(args, "serial_min_boot_seconds", 3.0) or 3.0),
+                    )
+                    elapsed_since_oldest = time.time() - min(subnet_power_on_ts)
+                    if elapsed_since_oldest < min_boot_to_probe_sec:
+                        wait_sec = min_boot_to_probe_sec - elapsed_since_oldest
+                        logger.info(
+                            "Serial warmup: waiting %.1fs before probe exchange (elapsed %.1fs, target %.1fs)",
+                            wait_sec,
+                            elapsed_since_oldest,
+                            min_boot_to_probe_sec,
+                        )
+                        time.sleep(wait_sec)
+
                 if subnet_power_on_ts:
                     oldest = min(subnet_power_on_ts)
                     logger.info(
@@ -875,9 +982,18 @@ def provision_test_vms(
                     }
                     for vi in range(len(subnet_vm_objs))
                 ]
+                serial_connect_timeout = 120 if is_memboot else 300
+                serial_io_timeout = 90 if is_memboot else 180
+                logger.info(
+                    "Serial probe timeouts: connect=%ss io=%ss (boot=%s)",
+                    serial_connect_timeout,
+                    serial_io_timeout,
+                    "memboot" if is_memboot else "ovf",
+                )
                 serial_results = _serial_server.run_subnet_probe(
                     configs, sync=has_intra,
-                    connect_timeout=300, io_timeout=180,
+                    connect_timeout=serial_connect_timeout,
+                    io_timeout=serial_io_timeout,
                 )
                 for vi, sr in enumerate(serial_results):
                     if sr["error"]:
@@ -914,7 +1030,7 @@ def provision_test_vms(
                     VMInstance(
                         datacenter=dc_name,
                         cluster=cl_name,
-                        host_name=str(getattr(host_obj_for_vm, "name", "")),
+                        host_name=(subnet_vm_hosts[vm_idx] if vm_idx < len(subnet_vm_hosts) else ""),
                         vm_name=vm_name,
                         vm_index=vm_idx,
                         moid=str(getattr(vm_obj, "_moId", "")),

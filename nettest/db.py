@@ -30,7 +30,9 @@ CREATE TABLE IF NOT EXISTS created_objects (
     nics_json TEXT NOT NULL DEFAULT '[]',
     tags_json TEXT NOT NULL DEFAULT '[]',
     isos_json TEXT NOT NULL DEFAULT '[]',
-    cleaned   INTEGER NOT NULL DEFAULT 0
+    cleaned   INTEGER NOT NULL DEFAULT 0,
+    cleanup_state TEXT NOT NULL DEFAULT 'pending',
+    cleanup_details_json TEXT NOT NULL DEFAULT '{}'
 );
 
 CREATE TABLE IF NOT EXISTS config (
@@ -104,6 +106,16 @@ def init(db_path: Path) -> None:
         # Migration: add isos_json column to created_objects if missing
         try:
             con.execute("ALTER TABLE created_objects ADD COLUMN isos_json TEXT NOT NULL DEFAULT '[]'")
+        except sqlite3.OperationalError:
+            pass  # already exists
+        # Migration: add cleanup_state column to created_objects if missing
+        try:
+            con.execute("ALTER TABLE created_objects ADD COLUMN cleanup_state TEXT NOT NULL DEFAULT 'pending'")
+        except sqlite3.OperationalError:
+            pass  # already exists
+        # Migration: add cleanup_details_json column to created_objects if missing
+        try:
+            con.execute("ALTER TABLE created_objects ADD COLUMN cleanup_details_json TEXT NOT NULL DEFAULT '{}'")
         except sqlite3.OperationalError:
             pass  # already exists
         # Migration: add action column to testsuite_cases if missing
@@ -183,8 +195,21 @@ def get_history(limit: int = 100) -> list[dict]:
     with _connect() as con:
         rows = con.execute(
             """SELECT r.run_id, r.status, r.probe_mode, r.total, r.passed, r.failed,
-                      CASE WHEN r.probe_mode = 'dry-run' THEN 1 ELSE COALESCE(co.cleaned, 0) END AS cleaned,
-                      CASE WHEN r.probe_mode = 'dry-run' THEN 1 ELSE COALESCE(co.cleaned, 0) END AS vms_cleaned
+                                            CASE
+                                                WHEN r.probe_mode = 'dry-run' THEN 'cleanup'
+                                                WHEN COALESCE(co.cleaned, 0) = 1 THEN 'cleanup'
+                                                ELSE COALESCE(NULLIF(co.cleanup_state, ''), 'pending')
+                                            END AS cleanup_state,
+                                            CASE
+                                                WHEN r.probe_mode = 'dry-run' THEN 1
+                                                WHEN COALESCE(co.cleaned, 0) = 1 THEN 1
+                                                ELSE 0
+                                            END AS cleaned,
+                                            CASE
+                                                WHEN r.probe_mode = 'dry-run' THEN 1
+                                                WHEN COALESCE(co.cleaned, 0) = 1 THEN 1
+                                                ELSE 0
+                                            END AS vms_cleaned
                FROM runs r
                LEFT JOIN created_objects co ON co.run_id = r.run_id
                ORDER BY r.created_at DESC LIMIT ?""",
@@ -224,7 +249,7 @@ def get_created_objects(run_id: str) -> dict:
     """Return the created-objects registry for a run, or an empty registry."""
     with _connect() as con:
         row = con.execute(
-            "SELECT vms_json, nics_json, tags_json, isos_json, cleaned FROM created_objects WHERE run_id=?",
+            "SELECT vms_json, nics_json, tags_json, isos_json, cleaned, cleanup_state, cleanup_details_json FROM created_objects WHERE run_id=?",
             (run_id,),
         ).fetchone()
     if row:
@@ -235,21 +260,77 @@ def get_created_objects(run_id: str) -> dict:
                 "tags":    json.loads(row[2] or "[]"),
                 "isos":    json.loads(row[3] or "[]"),
                 "cleaned": bool(row[4]),
+                "cleanup_state": str(row[5] or "pending"),
+                "cleanup_details": json.loads(row[6] or "{}"),
             }
         except Exception:
             pass
-    return {"vms": [], "nics": [], "tags": [], "isos": [], "cleaned": False}
+    return {
+        "vms": [],
+        "nics": [],
+        "tags": [],
+        "isos": [],
+        "cleaned": False,
+        "cleanup_state": "pending",
+        "cleanup_details": {},
+    }
+
+
+def list_created_objects() -> list[dict]:
+    with _connect() as con:
+        rows = con.execute(
+            "SELECT run_id, vms_json, nics_json, tags_json, isos_json, cleaned, cleanup_state, cleanup_details_json FROM created_objects"
+        ).fetchall()
+    out: list[dict] = []
+    for row in rows:
+        try:
+            out.append(
+                {
+                    "run_id": str(row[0]),
+                    "vms": json.loads(row[1] or "[]"),
+                    "nics": json.loads(row[2] or "[]"),
+                    "tags": json.loads(row[3] or "[]"),
+                    "isos": json.loads(row[4] or "[]"),
+                    "cleaned": bool(row[5]),
+                    "cleanup_state": str(row[6] or "pending"),
+                    "cleanup_details": json.loads(row[7] or "{}"),
+                }
+            )
+        except Exception:
+            continue
+    return out
+
+
+def set_cleanup_status(run_id: str, cleanup_state: str, cleanup_details: dict | None = None, cleaned: bool | None = None) -> None:
+    state = (cleanup_state or "pending").strip().lower()
+    if state not in ("pending", "cleanup", "partial", "failed"):
+        state = "pending"
+    details_json = json.dumps(cleanup_details or {}, ensure_ascii=False)
+    with _lock, _connect() as con:
+        con.execute(
+            """INSERT INTO created_objects (run_id, cleanup_state, cleanup_details_json, cleaned)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(run_id) DO UPDATE SET
+                   cleanup_state=excluded.cleanup_state,
+                   cleanup_details_json=excluded.cleanup_details_json,
+                   cleaned=CASE
+                       WHEN ? IS NULL THEN created_objects.cleaned
+                       ELSE ?
+                   END""",
+            (
+                run_id,
+                state,
+                details_json,
+                int(1 if cleaned else 0) if cleaned is not None else 0,
+                cleaned,
+                int(1 if cleaned else 0),
+            ),
+        )
 
 
 def mark_cleaned(run_id: str) -> None:
     """Mark a run's VMs as cleaned so cleanup cannot be triggered again."""
-    with _lock, _connect() as con:
-        con.execute(
-            """INSERT INTO created_objects (run_id, cleaned)
-               VALUES (?, 1)
-               ON CONFLICT(run_id) DO UPDATE SET cleaned=1""",
-            (run_id,),
-        )
+    set_cleanup_status(run_id, "cleanup", cleanup_details={"detail": "fully cleaned"}, cleaned=True)
 
 
 def get_result(run_id: str) -> dict | None:

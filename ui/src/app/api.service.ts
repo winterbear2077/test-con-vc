@@ -139,6 +139,37 @@ export interface HistoryEntry {
   total?: number;
   cleaned?: number;
   vms_cleaned?: number;
+  cleanup_state?: 'pending' | 'cleanup' | 'partial' | 'failed' | string;
+}
+
+export interface CleanupRunResponse {
+  cleaned: number;
+  skipped: number;
+  failed: number;
+  iso_cleaned?: number;
+  iso_failed?: number;
+  remaining?: number;
+  cleanup_state?: 'pending' | 'cleanup' | 'partial' | 'failed' | string;
+  detail?: string;
+}
+
+export interface CleanupAllResponse {
+  cleanup_state: 'pending' | 'cleanup' | 'partial' | 'failed' | string;
+  vm_prefix: string;
+  vm_cleaned: number;
+  vm_failed: number;
+  vm_skipped: number;
+  iso_cleaned: number;
+  iso_failed: number;
+  remaining: number;
+  run_updates?: Array<{
+    run_id: string;
+    cleanup_state: 'pending' | 'cleanup' | 'partial' | 'failed' | string;
+    remaining: number;
+    vms_cleaned: number;
+    isos_cleaned: number;
+  }>;
+  failures?: any[];
 }
 
 @Injectable({ providedIn: 'root' })
@@ -276,9 +307,17 @@ export class ApiService {
   getHistory(): Observable<HistoryEntry[]> { return this.http.get<HistoryEntry[]>(this.base + '/history'); }
   deleteHistory(runId: string): Observable<{ ok: boolean }> { return this.http.delete<{ ok: boolean }>(this.base + '/history/' + runId); }
 
-  cleanupRun(runId: string): Observable<{ cleaned: number; skipped: number; failed: number }> {
-    return this.http.post<any>(
+  cleanupRun(runId: string): Observable<CleanupRunResponse> {
+    return this.http.post<CleanupRunResponse>(
       this.base + '/run/' + runId + '/cleanup',
+      {},
+      this.sessionHeaders()
+    );
+  }
+
+  cleanupAllRuns(): Observable<CleanupAllResponse> {
+    return this.http.post<CleanupAllResponse>(
+      this.base + '/run/cleanup-all',
       {},
       this.sessionHeaders()
     );
